@@ -45,6 +45,10 @@
   var isButtonShown = false;
   var pollTimer = null;
   var lastTouchTime = 0;
+  var monitorTimer = null;
+  var polledTime = 0; // last currentTime seen by the polling monitor
+  var lastLogTime = 0; // throttle periodic heartbeat logging
+  var MONITOR_INTERVAL_MS = 250;
 
   // --- Button UI ----------------------------------------------------------
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -308,12 +312,77 @@
     v.__ytrrAttached = true;
     video = v;
     lastKnownTime = v.currentTime || 0;
+    polledTime = v.currentTime || 0;
     v.addEventListener("timeupdate", onTimeUpdate);
     v.addEventListener("seeking", onSeeking);
     v.addEventListener("seeked", onSeeked);
     v.addEventListener("play", onPlay);
     v.addEventListener("ended", onEnded);
     dbg("Attached to video. currentTime=" + v.currentTime.toFixed(1));
+  }
+
+  // --- Polling-based rewind detector --------------------------------------
+  // Mobile YouTube may not fire standard `seeking` events on rewind, so we
+  // also detect backward jumps by polling currentTime directly.
+  function monitorTick() {
+    // Re-pick the actively-playing video if our current one looks stale
+    pickActiveVideo();
+    if (!video) return;
+
+    var t = video.currentTime;
+
+    // Heartbeat log every ~4s so the user can confirm tracking works
+    var now = Date.now();
+    if (now - lastLogTime > 4000) {
+      lastLogTime = now;
+      dbg("tick t=" + t.toFixed(1) + " paused=" + video.paused + " term=" + (terminus === null ? "-" : terminus.toFixed(1)));
+    }
+
+    // Auto-pause at terminus while monitoring
+    if (monitoring && terminus !== null && t >= terminus - PAUSE_EPSILON) {
+      if (!video.paused) {
+        selfInitiatedSeek = false;
+        video.pause();
+        dbg("Auto-paused at " + t.toFixed(1));
+      }
+    }
+
+    // Detect a backward jump (rewind) that the seeking event may have missed
+    if (!selfInitiatedSeek) {
+      var delta = polledTime - t;
+      if (delta >= MIN_REWIND_SECONDS) {
+        dbg("Rewind via poll! " + polledTime.toFixed(1) + " -> " + t.toFixed(1));
+        recordRewind(polledTime);
+      }
+    }
+
+    if (isButtonShown && !monitoring) updateButtonVisual();
+    polledTime = t;
+  }
+
+  function pickActiveVideo() {
+    // If current video is playing and advancing, keep it.
+    if (video && document.contains(video) && (!video.paused || video.currentTime > 0)) {
+      return;
+    }
+    var vids = deepQuerySelectorAll(document, "video");
+    var best = null;
+    for (var i = 0; i < vids.length; i++) {
+      var cand = vids[i];
+      if (!best) { best = cand; continue; }
+      // Prefer a video that is playing or has progressed further
+      if ((!cand.paused && best.paused) || cand.currentTime > best.currentTime) {
+        best = cand;
+      }
+    }
+    if (best && best !== video) {
+      attachToVideo(best);
+    }
+  }
+
+  function startMonitor() {
+    if (monitorTimer) return;
+    monitorTimer = setInterval(monitorTick, MONITOR_INTERVAL_MS);
   }
 
   // Deep search: traverse shadow DOMs to find video elements
@@ -447,6 +516,9 @@
 
     // Periodic polling for video (covers late-loading players)
     startPolling();
+
+    // Continuous monitor: rewind detection via currentTime polling + auto-pause
+    startMonitor();
   }
 
   if (document.readyState === "loading") {
