@@ -45,26 +45,77 @@
       button.setAttribute("aria-label", "Replay rewound segment");
       button.appendChild(buildIcon());
       button.addEventListener("click", onButtonClick, true);
+      button.addEventListener("touchend", onButtonClick, true);
     }
     return button;
   }
 
-  function fullscreenRoot() {
-    return (
-      document.fullscreenElement ||
-      document.webkitFullscreenElement ||
-      null
-    );
+  // --- Player container detection -----------------------------------------
+  function findPlayerContainer() {
+    // Try multiple selectors for both desktop and mobile YouTube
+    const selectors = [
+      "#movie_player",                    // desktop
+      ".html5-video-player",              // desktop fallback
+      "#player-container-id",             // mobile m.youtube.com
+      ".player-container",                // mobile fallback
+      "ytm-player",                       // mobile web component
+      ".ytm-autonav-bar-button-renderer", // mobile
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    // Last resort: use the video element's closest positioned ancestor
+    if (video && video.parentElement) {
+      return video.parentElement;
+    }
+    return null;
+  }
+
+  function isFullscreen() {
+    // Standard Fullscreen API
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      return true;
+    }
+    // YouTube desktop player fullscreen class
+    const player = document.querySelector("#movie_player");
+    if (player && player.classList.contains("ytp-fullscreen")) {
+      return true;
+    }
+    // Mobile YouTube: check if html/body has fullscreen-related attributes
+    const html = document.documentElement;
+    if (html.getAttribute("fullscreen") !== null) {
+      return true;
+    }
+    // Detect Android fullscreen via viewport heuristic: if window fills screen
+    if (
+      window.innerHeight === screen.height ||
+      window.innerHeight >= screen.height - 30
+    ) {
+      return true;
+    }
+    return false;
   }
 
   function mountButton() {
-    const root = fullscreenRoot();
     const btn = ensureButton();
-    if (root) {
-      if (btn.parentElement !== root) root.appendChild(btn);
-    } else if (btn.parentElement) {
-      btn.parentElement.removeChild(btn);
+    // Try to mount inside fullscreen element first (works on desktop)
+    const fsRoot = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fsRoot) {
+      if (btn.parentElement !== fsRoot) fsRoot.appendChild(btn);
+      return;
     }
+    // Otherwise mount inside the player container
+    const container = findPlayerContainer();
+    if (container) {
+      // Ensure the container has position for absolute positioning of button
+      const pos = getComputedStyle(container).position;
+      if (pos === "static") container.style.position = "relative";
+      if (btn.parentElement !== container) container.appendChild(btn);
+      return;
+    }
+    // Fallback: append to body
+    if (btn.parentElement !== document.body) document.body.appendChild(btn);
   }
 
   function updateButtonClasses() {
@@ -78,7 +129,6 @@
   let isButtonShown = false;
 
   function showButton() {
-    if (!fullscreenRoot()) return; // fullscreen-only
     mountButton();
     isButtonShown = true;
     updateButtonClasses();
@@ -115,18 +165,17 @@
   function onButtonClick(event) {
     event.preventDefault();
     event.stopPropagation();
+    event.stopImmediatePropagation();
     if (!video || terminus === null) return;
 
     if (!monitoring) {
-      // First click: capture the start point and begin monitoring.
-      if (!hasValidInterval()) return; // already past the terminus
+      if (!hasValidInterval()) return;
       replayStart = video.currentTime;
       monitoring = true;
       clearHideTimer();
       showButton();
       selfPlay();
     } else {
-      // Subsequent click: jump back to the start and replay the segment.
       if (replayStart === null) return;
       selfSeek(replayStart);
       selfPlay();
@@ -138,7 +187,6 @@
     if (!video) return;
     selfInitiatedSeek = true;
     video.currentTime = time;
-    // The flag is cleared on the next 'seeked' event.
   }
 
   function selfPlay() {
@@ -148,12 +196,10 @@
     if (p && typeof p.catch === "function") p.catch(() => {});
     setTimeout(() => {
       selfInitiatedPlay = false;
-    }, 300);
+    }, 500);
   }
 
   function dismiss() {
-    // Stop monitoring and continue normal playback. Terminus is retained
-    // until a new rewind overwrites it or the video changes.
     monitoring = false;
     replayStart = null;
     hideButton();
@@ -178,7 +224,7 @@
 
   function onSeeking() {
     if (!video) return;
-    if (selfInitiatedSeek) return; // ignore replay jumps we triggered
+    if (selfInitiatedSeek) return;
 
     const from = lastKnownTime;
     const to = video.currentTime;
@@ -204,7 +250,6 @@
     }
     lastRewindWallTime = now;
 
-    // A fresh rewind cancels any in-progress replay session.
     monitoring = false;
     replayStart = null;
 
@@ -214,7 +259,6 @@
 
   function onPlay() {
     if (monitoring && !selfInitiatedPlay) {
-      // User resumed playback by other means => dismiss the replay session.
       dismiss();
     }
   }
@@ -232,8 +276,20 @@
   }
 
   // --- Wiring -------------------------------------------------------------
+  function detachFromVideo(v) {
+    if (!v) return;
+    v.removeEventListener("timeupdate", onTimeUpdate);
+    v.removeEventListener("seeking", onSeeking);
+    v.removeEventListener("seeked", onSeeked);
+    v.removeEventListener("play", onPlay);
+    v.removeEventListener("ended", onEnded);
+    v.__ytrrAttached = false;
+  }
+
   function attachToVideo(v) {
     if (!v || v.__ytrrAttached) return;
+    // Detach from the old video if switching
+    if (video && video !== v) detachFromVideo(video);
     v.__ytrrAttached = true;
     video = v;
     lastKnownTime = v.currentTime || 0;
@@ -245,27 +301,35 @@
   }
 
   function findAndAttach() {
-    const v = document.querySelector("video");
-    if (v && v !== video) {
-      video = v;
-    }
+    // Try multiple ways to find the video element
+    const v =
+      document.querySelector("video.html5-main-video") ||
+      document.querySelector("#movie_player video") ||
+      document.querySelector("ytm-player video") ||
+      document.querySelector(".player-container video") ||
+      document.querySelector("video");
     if (v) attachToVideo(v);
   }
 
   function onFullscreenChange() {
-    if (fullscreenRoot()) {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
       mountButton();
-      // Do not auto-show on entering fullscreen; only a rewind shows it.
       updateButtonClasses();
-    } else {
-      hideButton();
     }
   }
 
   function onNavigate() {
     resetState();
-    // The <video> element may be replaced after navigation.
-    setTimeout(findAndAttach, 0);
+    setTimeout(findAndAttach, 500);
+  }
+
+  // Watch for URL changes (SPA navigation) via popstate and history
+  let lastUrl = location.href;
+  function checkUrlChange() {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      onNavigate();
+    }
   }
 
   function init() {
@@ -274,10 +338,25 @@
 
     document.addEventListener("fullscreenchange", onFullscreenChange, true);
     document.addEventListener("webkitfullscreenchange", onFullscreenChange, true);
-    document.addEventListener("yt-navigate-finish", onNavigate, true);
 
-    // Fallback for navigations / late-loading players: watch the DOM for a
-    // new video element and reattach.
+    // YouTube SPA navigation events
+    document.addEventListener("yt-navigate-finish", onNavigate, true);
+    // Mobile YouTube may use different navigation; also listen for popstate
+    window.addEventListener("popstate", checkUrlChange, true);
+
+    // Intercept pushState/replaceState for SPA detection
+    const origPushState = history.pushState;
+    history.pushState = function () {
+      origPushState.apply(this, arguments);
+      checkUrlChange();
+    };
+    const origReplaceState = history.replaceState;
+    history.replaceState = function () {
+      origReplaceState.apply(this, arguments);
+      checkUrlChange();
+    };
+
+    // Watch DOM for new video elements (lazy-loaded players)
     const observer = new MutationObserver(() => {
       findAndAttach();
     });
@@ -285,6 +364,10 @@
       childList: true,
       subtree: true,
     });
+
+    // Retry finding video in case it loads late
+    setTimeout(findAndAttach, 1000);
+    setTimeout(findAndAttach, 3000);
   }
 
   if (document.readyState === "loading") {
