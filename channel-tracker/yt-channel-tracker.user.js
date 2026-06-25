@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      0.5.0
+// @version      0.6.0
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
@@ -166,12 +166,14 @@
       if (!title) continue; // skip non-video chrome links
 
       seen[id] = true;
+      var m = measureProgress(card);
       out.push({
         id: id,
         title: title,
         thumb: extractThumb(card, id),
         duration: extractDuration(card),
-        progress: extractProgress(card)
+        progress: m.progress,
+        diag: { sel: m.sel, width: m.width, aria: m.aria, ratio: m.ratio, scaleX: m.scaleX, signal: m.signal }
       });
     }
     return out;
@@ -254,32 +256,77 @@
     return Math.max(0, Math.min(100, Math.round(n)));
   }
 
-  function extractProgress(card) {
-    if (!card) return null;
-    // Known explicit selectors first (cheap, precise when present).
-    var bar = card.querySelector(
-      "ytm-thumbnail-overlay-resume-playback-renderer .thumbnail-overlay-resume-playback-progress, " +
-        ".thumbnail-overlay-resume-playback-progress, " +
-        "#progress, .ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment, " +
-        ".ytThumbnailOverlayResumePlaybackRendererProgressBar, " +
-        ".ytProgressBarLineProgressBarPlayed, .ytProgressBarPlayheadProgressBarPlayed"
-    );
-    var p = pctFromEl(bar);
-    if (p != null) return p;
+  var PROGRESS_SELECTOR =
+    "ytm-thumbnail-overlay-resume-playback-renderer .thumbnail-overlay-resume-playback-progress, " +
+    ".thumbnail-overlay-resume-playback-progress, " +
+    "#progress, .ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment, " +
+    ".ytThumbnailOverlayResumePlaybackRendererProgressBar, " +
+    ".ytProgressBarLineProgressBarPlayed, .ytProgressBarPlayheadProgressBarPlayed";
 
-    // Broad fallback: scan all descendants whose class/id mentions
-    // resume/progress/played and try to read a width from them.
-    var all = card.querySelectorAll('[class*="rogress"], [class*="esume"], [class*="layed"], [role="progressbar"]');
-    var watchedSignal = false;
-    for (var i = 0; i < all.length; i++) {
-      var el = all[i];
-      watchedSignal = true;
-      var v = pctFromEl(el);
-      if (v != null && v > 0) return v;
+  // Read the scaleX factor from an element's transform (matrix(a,...) or
+  // scaleX(a)), used by progress bars that scale a full-width element.
+  function scaleXFromEl(el) {
+    if (!el) return null;
+    try {
+      var t = getComputedStyle(el).transform;
+      if (!t || t === "none") return null;
+      var m = t.match(/matrix\(([^)]+)\)/);
+      if (m) {
+        var a = parseFloat(m[1].split(",")[0]);
+        if (!isNaN(a)) return clampPct(a * 100);
+      }
+      var sx = t.match(/scaleX\(([\d.]+)\)/);
+      if (sx) return clampPct(parseFloat(sx[1]) * 100);
+    } catch (e) {}
+    return null;
+  }
+
+  function extractProgress(card) {
+    return measureProgress(card).progress;
+  }
+
+  // Compute the watched percentage and capture the raw values each read
+  // method produced, so the in-app Debug tool can explain mismatches.
+  function measureProgress(card) {
+    var diag = { sel: "", width: null, aria: null, ratio: null, scaleX: null, progress: null, signal: false };
+    if (!card) return diag;
+
+    var bar = card.querySelector(PROGRESS_SELECTOR);
+    var el = bar;
+    if (!el) {
+      var all = card.querySelectorAll('[class*="rogress"], [class*="esume"], [class*="layed"], [role="progressbar"]');
+      for (var i = 0; i < all.length; i++) {
+        diag.signal = true;
+        if (pctFromEl(all[i]) != null || scaleXFromEl(all[i]) != null) {
+          el = all[i];
+          break;
+        }
+      }
+      if (!el && all.length) el = all[0];
     }
-    // If we saw a resume/progress element but couldn't measure it, treat as
-    // partially watched rather than "unwatched" (better than a false negative).
-    return watchedSignal ? 50 : null;
+
+    if (el) {
+      diag.sel = (el.tagName || "").toLowerCase() + (el.className ? "." + String(el.className).replace(/\s+/g, ".") : "");
+      var w = el.style && el.style.width ? el.style.width : "";
+      var pm = w.match(/([\d.]+)%/);
+      if (pm) diag.width = clampPct(parseFloat(pm[1]));
+      var av = el.getAttribute && el.getAttribute("aria-valuenow");
+      if (av != null && av !== "" && !isNaN(parseFloat(av))) diag.aria = clampPct(parseFloat(av));
+      try {
+        var cs = parseFloat(getComputedStyle(el).width);
+        var pw = el.parentElement ? parseFloat(getComputedStyle(el.parentElement).width) : 0;
+        if (cs && pw && pw > cs * 0.2) diag.ratio = clampPct((cs / pw) * 100);
+      } catch (e) {}
+      diag.scaleX = scaleXFromEl(el);
+    }
+
+    // Final decision: prefer the most reliable signals first.
+    if (diag.width != null) diag.progress = diag.width;
+    else if (diag.aria != null) diag.progress = diag.aria;
+    else if (diag.scaleX != null) diag.progress = diag.scaleX;
+    else if (diag.ratio != null) diag.progress = diag.ratio;
+    else if (diag.signal) diag.progress = 50;
+    return diag;
   }
 
   // Diagnostic: capture the HTML of the first card that has a thumbnail, so we
@@ -503,6 +550,78 @@
     document.documentElement.appendChild(box);
   }
 
+  // One-tap progress-bar diagnostic: dumps a compact, copyable report of the
+  // last ~15 cards in the cached list, showing what each read method produced
+  // and the final decision, so watched-% mismatches can be diagnosed remotely.
+  function showProgressDiag(rec) {
+    closeOverlay();
+    var vids = (rec && rec.videos) || [];
+    var lines = [];
+    lines.push("YT Channel Tracker progress diagnostic");
+    lines.push("version 0.6.0  channel=" + (rec && rec.channelKey ? rec.channelKey : "?"));
+    lines.push("total=" + vids.length + "  scannedAt=" + (rec && rec.scannedAt ? new Date(rec.scannedAt).toISOString() : "?"));
+    lines.push("columns: progress | width% | aria | ratio% | scaleX% | signal | sel | title");
+    lines.push("----------------------------------------");
+    var start = Math.max(0, vids.length - 15);
+    for (var i = start; i < vids.length; i++) {
+      var v = vids[i];
+      var d = v.diag || {};
+      lines.push(
+        "[" + (i + 1) + "] " +
+          fmtPct(v.progress) + " | " +
+          fmtPct(d.width) + " | " +
+          fmtPct(d.aria) + " | " +
+          fmtPct(d.ratio) + " | " +
+          fmtPct(d.scaleX) + " | " +
+          (d.signal ? "Y" : "n") + " | " +
+          (d.sel || "-") + " | " +
+          String(v.title || "").slice(0, 40)
+      );
+    }
+    if (vids.length === 0) lines.push("(no cached videos — Scan first)");
+
+    var report = lines.join("\n");
+    var box = document.createElement("div");
+    box.id = OVERLAY_ID;
+    box.className = "ytct-overlay";
+    var hdr = document.createElement("div");
+    hdr.className = "ytct-header";
+    var t = document.createElement("div");
+    t.className = "ytct-title";
+    t.textContent = "Progress diagnostic (last 15)";
+    var x = mkBtn("Close", function () { closeOverlay(); });
+    hdr.appendChild(t);
+    hdr.appendChild(x);
+    var ta = document.createElement("textarea");
+    ta.value = report;
+    ta.readOnly = true;
+    ta.style.cssText =
+      "width:100%;height:60vh;background:#111;color:#0f0;border:0;font-size:11px;white-space:pre;box-sizing:border-box;padding:8px;";
+    var bar = document.createElement("div");
+    bar.className = "ytct-toolbar";
+    var copyBtn = mkBtn("Copy", function () {
+      ta.focus();
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) {}
+      if (!ok && navigator.clipboard) {
+        navigator.clipboard.writeText(report).then(function () {}, function () {});
+      }
+      copyBtn.textContent = "Copied \u2713";
+      toast("Copied");
+      setTimeout(function () { copyBtn.textContent = "Copy"; }, 1500);
+    });
+    bar.appendChild(copyBtn);
+    box.appendChild(hdr);
+    box.appendChild(bar);
+    box.appendChild(ta);
+    document.documentElement.appendChild(box);
+  }
+
+  function fmtPct(n) {
+    return n == null ? "-" : n + "%";
+  }
+
   function removeFab() {
     var f = document.getElementById(FAB_ID);
     if (f) f.remove();
@@ -641,9 +760,9 @@
 
     var diagBtn = document.createElement("button");
     diagBtn.className = "ytct-close";
-    diagBtn.textContent = "HTML";
-    diagBtn.title = "Diagnostic: sample card HTML";
-    diagBtn.addEventListener("click", function () { showSampleOverlay(); }, true);
+    diagBtn.textContent = "Debug";
+    diagBtn.title = "Diagnostic: progress-bar readings";
+    diagBtn.addEventListener("click", function () { showProgressDiag(rec); }, true);
 
     var close = document.createElement("button");
     close.className = "ytct-close";
