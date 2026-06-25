@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      0.1.0
+// @version      0.2.0
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
 // @author       MaterialPikemanFeel
 // @match        https://m.youtube.com/*
@@ -156,7 +156,7 @@
 
       // Walk up to the card container so we can read title/thumb/progress.
       var card = a.closest(
-        "ytm-media-item, ytm-video-with-context-renderer, ytm-compact-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, li, .compact-media-item"
+        "ytm-media-item, ytm-video-with-context-renderer, ytm-compact-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, yt-lockup-view-model, li, .compact-media-item"
       ) || a.parentElement;
 
       var title = extractTitle(a, card);
@@ -220,27 +220,84 @@
   }
 
   // Read YouTube's native "resume playback" red bar to derive watched %.
+  // Mobile YouTube has cycled through several DOM shapes for this bar, so we
+  // search broadly: any element under the card whose class/id hints at a
+  // resume/progress segment, then read its width from inline style, computed
+  // style ratio, or an aria-value.
+  function pctFromEl(el) {
+    if (!el) return null;
+    // 1) Inline style width as a percentage.
+    var w = el.style && el.style.width ? el.style.width : "";
+    var pm = w.match(/([\d.]+)%/);
+    if (pm) return clampPct(parseFloat(pm[1]));
+    // 2) ARIA value (progressbar role).
+    var av = el.getAttribute && el.getAttribute("aria-valuenow");
+    if (av != null && av !== "") {
+      var n = parseFloat(av);
+      if (!isNaN(n)) return clampPct(n);
+    }
+    // 3) Computed width relative to parent (handles px / flex / transform).
+    try {
+      var cs = parseFloat(getComputedStyle(el).width);
+      var parent = el.parentElement;
+      var pw = parent ? parseFloat(getComputedStyle(parent).width) : 0;
+      if (cs && pw && pw > cs * 0.2) return clampPct((cs / pw) * 100);
+    } catch (e) {}
+    return null;
+  }
+
+  function clampPct(n) {
+    if (isNaN(n)) return null;
+    return Math.max(0, Math.min(100, Math.round(n)));
+  }
+
   function extractProgress(card) {
     if (!card) return null;
+    // Known explicit selectors first (cheap, precise when present).
     var bar = card.querySelector(
       "ytm-thumbnail-overlay-resume-playback-renderer .thumbnail-overlay-resume-playback-progress, " +
         ".thumbnail-overlay-resume-playback-progress, " +
         "#progress, .ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment, " +
-        ".ytThumbnailOverlayResumePlaybackRendererProgressBar"
+        ".ytThumbnailOverlayResumePlaybackRendererProgressBar, " +
+        ".ytProgressBarLineProgressBarPlayed, .ytProgressBarPlayheadProgressBarPlayed"
     );
-    if (!bar) return null;
-    var w = bar.style && bar.style.width ? bar.style.width : "";
-    var pm = w.match(/([\d.]+)%/);
-    if (pm) return Math.max(0, Math.min(100, Math.round(parseFloat(pm[1]))));
-    // Some layouts expose width via attribute or computed style.
-    try {
-      var cs = parseFloat(getComputedStyle(bar).width);
-      var pw = bar.parentElement
-        ? parseFloat(getComputedStyle(bar.parentElement).width)
-        : 0;
-      if (cs && pw) return Math.round((cs / pw) * 100);
-    } catch (e) {}
-    return null;
+    var p = pctFromEl(bar);
+    if (p != null) return p;
+
+    // Broad fallback: scan all descendants whose class/id mentions
+    // resume/progress/played and try to read a width from them.
+    var all = card.querySelectorAll('[class*="rogress"], [class*="esume"], [class*="layed"], [role="progressbar"]');
+    var watchedSignal = false;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      watchedSignal = true;
+      var v = pctFromEl(el);
+      if (v != null && v > 0) return v;
+    }
+    // If we saw a resume/progress element but couldn't measure it, treat as
+    // partially watched rather than "unwatched" (better than a false negative).
+    return watchedSignal ? 50 : null;
+  }
+
+  // Diagnostic: capture the HTML of the first card that has a thumbnail, so we
+  // can identify the exact progress-bar markup on this device.
+  function captureSampleHtml() {
+    var anchors = document.querySelectorAll('a[href*="/watch?v="]');
+    for (var i = 0; i < anchors.length; i++) {
+      var a = anchors[i];
+      if (!/[?&]v=([A-Za-z0-9_-]{11})/.test(a.getAttribute("href") || "")) continue;
+      var card =
+        a.closest(
+          "ytm-media-item, ytm-video-with-context-renderer, ytm-compact-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, yt-lockup-view-model, li, .compact-media-item"
+        ) || a.parentElement;
+      if (card) {
+        var html = card.outerHTML || "";
+        // Trim to keep it pasteable.
+        if (html.length > 8000) html = html.slice(0, 8000) + "…[truncated]";
+        return html;
+      }
+    }
+    return "(no video card found)";
   }
 
   // ---- Scan loop ----------------------------------------------------------
@@ -523,9 +580,38 @@
       runScan(rec.channelKey, false);
     });
 
+    // Diagnostic: dump a sample card's HTML into a textarea so the user can
+    // copy it and send it back. Helps identify the device's progress markup.
+    var sampleBtn = mkBtn("Sample", function () {
+      closeOverlay();
+      var html = captureSampleHtml();
+      var box = document.createElement("div");
+      box.id = OVERLAY_ID;
+      box.className = "ytct-overlay";
+      box.innerHTML =
+        '<div class="ytct-header"><span>Sample card HTML</span></div>';
+      var ta = document.createElement("textarea");
+      ta.value = html;
+      ta.style.cssText =
+        "width:100%;height:60vh;background:#111;color:#0f0;border:0;font-size:11px;white-space:pre;";
+      var copyBtn = mkBtn("Copy", function () {
+        ta.select();
+        try { document.execCommand("copy"); } catch (e) {}
+      });
+      var backBtn = mkBtn("Close", function () { closeOverlay(); });
+      var bar = document.createElement("div");
+      bar.className = "ytct-toolbar";
+      bar.appendChild(copyBtn);
+      bar.appendChild(backBtn);
+      box.appendChild(bar);
+      box.appendChild(ta);
+      document.documentElement.appendChild(box);
+    });
+
     toolbar.appendChild(sortBtn);
     toolbar.appendChild(filtBtn);
     toolbar.appendChild(rescanBtn);
+    toolbar.appendChild(sampleBtn);
 
     var listWrap = document.createElement("div");
     listWrap.className = "ytct-list";
