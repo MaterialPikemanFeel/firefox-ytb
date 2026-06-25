@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "name": "YouTube Rewind Replay",
+  "version": "1.0.0",
+  "description": "Remembers where you rewound from on YouTube and lets you replay that segment with one tap. Designed for fullscreen on Firefox for Android.",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "youtube-rewind-replay@materialpikemanfeel",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*", "*://m.youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

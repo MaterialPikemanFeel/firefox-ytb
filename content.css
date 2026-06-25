@@ -1,0 +1,44 @@
+#ytrr-button {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 50%;
+  margin: 0;
+  padding: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffffff;
+  cursor: pointer;
+  z-index: 2147483647;
+  opacity: 0;
+  transition: opacity 0.25s ease, background-color 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+#ytrr-button.ytrr-visible {
+  display: flex;
+  opacity: 0.75;
+}
+
+#ytrr-button.ytrr-monitoring {
+  background: rgba(29, 122, 252, 0.85);
+  opacity: 1;
+}
+
+#ytrr-button.ytrr-disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+#ytrr-button svg {
+  width: 26px;
+  height: 26px;
+  fill: currentColor;
+  pointer-events: none;
+}
