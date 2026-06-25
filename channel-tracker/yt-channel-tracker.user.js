@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      0.4.0
+// @version      0.5.0
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
@@ -95,6 +95,7 @@
   var filterMode = "all"; // all | unwatched | watched
   var scanning = false;
   var cancelScan = false;
+  var currentRec = null; // record backing the currently-open list overlay
 
   // ---- Channel identity ---------------------------------------------------
   function getChannelKey() {
@@ -402,7 +403,10 @@
 
   // ---- UI: floating action button -----------------------------------------
   function ensureFab() {
-    if (document.getElementById(FAB_ID)) return;
+    if (document.getElementById(FAB_ID)) {
+      refreshFabLabel();
+      return;
+    }
     if (!isVideosTab()) return;
     var fab = document.createElement("button");
     fab.id = FAB_ID;
@@ -412,6 +416,22 @@
     fab.addEventListener("click", onFabClick, true);
     attachLongPress(fab, showSampleOverlay);
     document.documentElement.appendChild(fab);
+    refreshFabLabel();
+  }
+
+  // Reflect cache state on the FAB: show "Scan" when this channel has no cached
+  // list yet, "List" once it does.
+  function refreshFabLabel() {
+    var fab = document.getElementById(FAB_ID);
+    if (!fab) return;
+    var chKey = getChannelKey();
+    if (!chKey) return;
+    loadRecord(chKey).then(function (rec) {
+      var f = document.getElementById(FAB_ID);
+      if (!f) return;
+      var has = rec && rec.videos && rec.videos.length;
+      f.textContent = has ? "List" : "Scan";
+    });
   }
 
   // Long-press the FAB (~600ms) to dump a sample card's HTML, independent of
@@ -598,6 +618,7 @@
   // ---- UI: overlay list ----------------------------------------------------
   function openOverlay(rec) {
     closeOverlay();
+    currentRec = rec;
     var ov = document.createElement("div");
     ov.id = OVERLAY_ID;
 
@@ -695,12 +716,109 @@
     var listWrap = document.createElement("div");
     listWrap.className = "ytct-list";
 
+    // Always-visible "jump to last opened" button, floating over the list so
+    // it stays in view no matter how far you scroll. Greyed out until there's
+    // a last-opened video recorded for this channel.
+    var jump = document.createElement("button");
+    jump.id = "ytct-jump";
+    jump.type = "button";
+    jump.textContent = "\u2193 Jump to last";
+    jump.title = "Scroll to the video you last opened";
+    jump.addEventListener(
+      "click",
+      function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        jumpToLast(listWrap);
+      },
+      true
+    );
+
     ov.appendChild(header);
     ov.appendChild(toolbar);
     ov.appendChild(listWrap);
+    ov.appendChild(jump);
     document.documentElement.appendChild(ov);
 
     renderList(listWrap, rec.videos);
+    updateJumpState();
+  }
+
+  function updateJumpState() {
+    var btn = document.getElementById("ytct-jump");
+    if (!btn) return;
+    var has = !!(currentRec && currentRec.lastOpenedId);
+    btn.disabled = !has;
+    btn.classList.toggle("ytct-jump-off", !has);
+  }
+
+  // Scroll the list to the last-opened video and flash it. If that video is
+  // hidden by the current filter, fall back to the nearest visible row by seq.
+  function jumpToLast(wrap) {
+    if (!currentRec || !currentRec.lastOpenedId) return;
+    var id = currentRec.lastOpenedId;
+    var target = wrap.querySelector('.ytct-row[data-vid="' + id + '"]');
+    if (!target) {
+      target = nearestVisibleRow(wrap, id);
+      if (target) toast("Last video hidden by filter \u2014 jumped to nearest");
+      else {
+        toast("Last video not in current view");
+        return;
+      }
+    }
+    target.scrollIntoView({ block: "center" });
+    flashRow(target);
+  }
+
+  function nearestVisibleRow(wrap, id) {
+    var src = null;
+    for (var i = 0; i < currentRec.videos.length; i++) {
+      if (currentRec.videos[i].id === id) {
+        src = currentRec.videos[i];
+        break;
+      }
+    }
+    if (!src) return null;
+    var rows = wrap.querySelectorAll(".ytct-row[data-seq]");
+    var best = null;
+    var bestD = Infinity;
+    for (var j = 0; j < rows.length; j++) {
+      var s = parseInt(rows[j].getAttribute("data-seq"), 10);
+      var d = Math.abs(s - (src.seq || 0));
+      if (d < bestD) {
+        bestD = d;
+        best = rows[j];
+      }
+    }
+    return best;
+  }
+
+  function flashRow(row) {
+    row.classList.remove("ytct-row-flash");
+    // Reflow so the animation restarts even on repeated jumps.
+    void row.offsetWidth;
+    row.classList.add("ytct-row-flash");
+    setTimeout(function () {
+      row.classList.remove("ytct-row-flash");
+    }, 2200);
+  }
+
+  // Remember which video the user just opened, persist it, and reflect it in
+  // the UI (highlight + enable the jump button).
+  function markLastOpened(id) {
+    if (!currentRec) return;
+    currentRec.lastOpenedId = id;
+    saveRecord(currentRec.channelKey, currentRec);
+    updateJumpState();
+    var wrap = document.querySelector("#" + OVERLAY_ID + " .ytct-list");
+    if (wrap) {
+      var prev = wrap.querySelectorAll(".ytct-row-last");
+      for (var i = 0; i < prev.length; i++) {
+        prev[i].classList.remove("ytct-row-last");
+      }
+      var cur = wrap.querySelector('.ytct-row[data-vid="' + id + '"]');
+      if (cur) cur.classList.add("ytct-row-last");
+    }
   }
 
   function filterLabel() {
@@ -764,6 +882,11 @@
   function rowFor(v) {
     var row = document.createElement("div");
     row.className = "ytct-row";
+    row.setAttribute("data-vid", v.id);
+    if (v.seq != null) row.setAttribute("data-seq", v.seq);
+    if (currentRec && currentRec.lastOpenedId === v.id) {
+      row.classList.add("ytct-row-last");
+    }
 
     var thumbWrap = document.createElement("div");
     thumbWrap.className = "ytct-thumb";
@@ -811,6 +934,7 @@
     row.appendChild(meta);
 
     row.addEventListener("click", function () {
+      markLastOpened(v.id);
       openTab("https://m.youtube.com/watch?v=" + v.id);
     });
 
@@ -855,6 +979,7 @@
       lazyObserver.disconnect();
       lazyObserver = null;
     }
+    refreshFabLabel();
   }
 
   // ---- Tiny UI helpers -----------------------------------------------------
@@ -999,6 +1124,13 @@
       ".ytct-row-title{font-size:14px;line-height:1.3;max-height:3.9em;overflow:hidden;}",
       ".ytct-row-sub{font-size:12px;color:#aaa;margin-top:4px;}",
       ".ytct-empty{padding:40px 16px;text-align:center;color:#aaa;}",
+      "#ytct-jump{position:absolute;right:16px;bottom:18px;z-index:5;",
+      "background:#cc0000;color:#fff;border:none;border-radius:20px;padding:10px 16px;",
+      "font:600 13px system-ui,sans-serif;box-shadow:0 3px 10px rgba(0,0,0,.5);cursor:pointer;}",
+      "#ytct-jump.ytct-jump-off{background:#2a2a2a;color:#666;box-shadow:none;cursor:default;}",
+      ".ytct-row-last{background:#1d1c10;}",
+      ".ytct-row-flash{animation:ytctflash 2.2s ease-out;}",
+      "@keyframes ytctflash{0%{background:#5a4a00;}100%{background:transparent;}}",
       "#ytct-toast{position:fixed;left:50%;bottom:120px;transform:translateX(-50%);",
       "z-index:2147483647;background:#333;color:#fff;padding:10px 16px;border-radius:8px;",
       "font:14px system-ui;display:none;max-width:80%;text-align:center;}",
