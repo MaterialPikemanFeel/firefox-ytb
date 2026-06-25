@@ -118,7 +118,32 @@
     return svg;
   }
 
+  var longPressTimer = null;
+  var longPressFired = false;
+  function startLongPress() {
+    longPressFired = false;
+    if (longPressTimer) clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(function () {
+      longPressFired = true;
+      longPressTimer = null;
+      dbg("Long-press: dismiss");
+      dismiss();
+    }, 600);
+  }
+  function cancelLongPress() {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
+
   function onButtonInteraction(event) {
+    // Press-and-hold to dismiss the button entirely.
+    if (event.type === "touchstart" || event.type === "mousedown") {
+      startLongPress();
+      return;
+    }
+    cancelLongPress();
     // Prevent double-firing from touch + click on mobile
     if (event.type === "touchend") {
       lastTouchTime = Date.now();
@@ -129,6 +154,11 @@
     }
     event.stopPropagation();
     event.stopImmediatePropagation();
+    if (longPressFired) {
+      // The hold already dismissed; swallow the trailing tap.
+      longPressFired = false;
+      return;
+    }
     onButtonClick();
   }
 
@@ -155,7 +185,10 @@
         "line-height:1!important;font-size:0!important;overflow:hidden!important;";
       button.appendChild(buildIcon());
       button.addEventListener("click", onButtonInteraction, true);
+      button.addEventListener("touchstart", onButtonInteraction, true);
       button.addEventListener("touchend", onButtonInteraction, true);
+      button.addEventListener("mousedown", onButtonInteraction, true);
+      button.addEventListener("touchcancel", cancelLongPress, true);
     }
     return button;
   }
@@ -413,8 +446,21 @@
   // Mobile YouTube may not fire standard `seeking` events on rewind, so we
   // also detect backward jumps by polling currentTime directly.
   function monitorTick() {
+    // Catch SPA navigations that mobile YouTube performs without firing
+    // pushState / popstate / yt-navigate-finish. Polling the URL here ensures
+    // leaving the video reliably clears state (and hides the blue button).
+    checkUrlChange();
+
     // Re-pick the actively-playing video if our current one looks stale
     pickActiveVideo();
+
+    // If we were monitoring but the video element is gone from the document
+    // (e.g. the player was torn down on navigation), end the session so the
+    // button does not linger forever.
+    if ((monitoring || isButtonShown) && video && !document.contains(video)) {
+      dbg("Video detached from DOM; resetting");
+      resetState();
+    }
     if (!video) return;
 
     var t = video.currentTime;
