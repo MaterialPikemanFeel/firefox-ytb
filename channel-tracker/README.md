@@ -33,6 +33,15 @@ Next time you tap **List** it asks whether to **Update** (incremental: scroll
 from the top until it hits already-cached videos) or **Skip** (open the cache
 instantly).
 
+### Hub (overview of all channels)
+
+Open `https://m.youtube.com/?ytct=hub` — bookmark it / pin it to the Firefox
+home screen. It shows a card for every cached channel (latest-video cover,
+name, video count, unwatched count, last-scanned time). Pick a sort (recently
+scanned / name A–Z / most unwatched), tap a card to open that channel's cached
+list, and **Close** returns to the hub. The **✕** on a card deletes that
+channel's cache. Works offline since everything is read from the local cache.
+
 ## Notes / limitations
 
 - Watched state comes purely from YouTube's native resume-playback bar, so it

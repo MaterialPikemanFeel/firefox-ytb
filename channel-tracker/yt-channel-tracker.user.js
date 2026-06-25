@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      1.0.2
+// @version      1.1.0
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
@@ -64,6 +64,20 @@
         if (typeof GM_deleteValue === "function") GM_deleteValue(key);
       } catch (e2) {}
       return Promise.resolve();
+    },
+    keys: function () {
+      try {
+        if (typeof GM !== "undefined" && GM && GM.listValues) {
+          return Promise.resolve(GM.listValues());
+        }
+      } catch (e) {}
+      try {
+        return Promise.resolve(
+          typeof GM_listValues === "function" ? GM_listValues() : []
+        );
+      } catch (e2) {
+        return Promise.resolve([]);
+      }
     }
   };
 
@@ -96,6 +110,7 @@
   var scanning = false;
   var cancelScan = false;
   var currentRec = null; // record backing the currently-open list overlay
+  var cameFromHub = false; // true when a list was opened from the hub
 
   // ---- Channel identity ---------------------------------------------------
   function getChannelKey() {
@@ -448,6 +463,199 @@
     return store.set(recordKey(chKey), JSON.stringify(rec));
   }
 
+  // Load every cached channel record from storage.
+  function loadAllRecords() {
+    return store.keys().then(function (keys) {
+      keys = keys || [];
+      var jobs = [];
+      for (var i = 0; i < keys.length; i++) {
+        if (String(keys[i]).indexOf(PREFIX) !== 0) continue;
+        jobs.push(
+          store.get(keys[i], null).then(function (raw) {
+            if (!raw) return null;
+            try {
+              return typeof raw === "string" ? JSON.parse(raw) : raw;
+            } catch (e) {
+              return null;
+            }
+          })
+        );
+      }
+      return Promise.all(jobs).then(function (recs) {
+        return recs.filter(function (r) {
+          return r && r.videos && r.videos.length;
+        });
+      });
+    });
+  }
+
+  // The newest video (smallest seq) — used for the hub cover thumbnail.
+  function newestVideo(rec) {
+    var best = null;
+    var vids = (rec && rec.videos) || [];
+    for (var i = 0; i < vids.length; i++) {
+      if (best === null || (vids[i].seq || 0) < (best.seq || 0)) best = vids[i];
+    }
+    return best;
+  }
+
+  // ---- Hub: a bookmarkable overview of every cached channel ----------------
+  // Entry URL: https://m.youtube.com/?ytct=hub (bookmark this).
+  var hubSort = "recent"; // recent | name | unwatched
+
+  function isHubRoute() {
+    return (
+      /[?&]ytct=hub/.test(location.search) || /[#&]ytct=hub/.test(location.hash)
+    );
+  }
+
+  function hubSortLabel() {
+    return hubSort === "recent"
+      ? "Sort: Recently scanned"
+      : hubSort === "name"
+      ? "Sort: Name (A\u2013Z)"
+      : "Sort: Most unwatched";
+  }
+
+  function sortHubRecords(recs) {
+    var arr = recs.slice();
+    if (hubSort === "name") {
+      arr.sort(function (a, b) {
+        return String(a.title || "").localeCompare(String(b.title || ""));
+      });
+    } else if (hubSort === "unwatched") {
+      arr.sort(function (a, b) {
+        return countWatched(b.videos).unwatched - countWatched(a.videos).unwatched;
+      });
+    } else {
+      arr.sort(function (a, b) {
+        return (b.scannedAt || 0) - (a.scannedAt || 0);
+      });
+    }
+    return arr;
+  }
+
+  function openHub() {
+    closeOverlay();
+    var ov = document.createElement("div");
+    ov.id = OVERLAY_ID;
+    ov.className = "ytct-hub";
+
+    var header = document.createElement("div");
+    header.className = "ytct-header";
+    var titleEl = document.createElement("div");
+    titleEl.className = "ytct-title";
+    titleEl.textContent = "Channel Tracker";
+    var stats = document.createElement("div");
+    stats.className = "ytct-stats";
+    stats.id = "ytct-hub-stats";
+    header.appendChild(titleEl);
+    header.appendChild(stats);
+
+    var toolbar = document.createElement("div");
+    toolbar.className = "ytct-toolbar";
+    var sortBtn = mkBtn(hubSortLabel(), function () {
+      hubSort =
+        hubSort === "recent" ? "name" : hubSort === "name" ? "unwatched" : "recent";
+      sortBtn.textContent = hubSortLabel();
+      paint();
+    });
+    toolbar.appendChild(sortBtn);
+
+    var grid = document.createElement("div");
+    grid.className = "ytct-hub-grid";
+
+    ov.appendChild(header);
+    ov.appendChild(toolbar);
+    ov.appendChild(grid);
+    document.documentElement.appendChild(ov);
+
+    var records = [];
+    function paint() {
+      grid.textContent = "";
+      var st = document.getElementById("ytct-hub-stats");
+      if (st) st.textContent = records.length + " channels";
+      if (!records.length) {
+        var empty = document.createElement("div");
+        empty.className = "ytct-empty";
+        empty.textContent =
+          "No channels cached yet. Open a channel's Videos tab and tap Scan.";
+        grid.appendChild(empty);
+        return;
+      }
+      var arr = sortHubRecords(records);
+      var frag = document.createDocumentFragment();
+      for (var i = 0; i < arr.length; i++) frag.appendChild(hubCard(arr[i]));
+      grid.appendChild(frag);
+    }
+
+    loadAllRecords().then(function (recs) {
+      records = recs;
+      paint();
+    });
+  }
+
+  function hubCard(rec) {
+    var card = document.createElement("div");
+    card.className = "ytct-hub-card";
+
+    var thumbWrap = document.createElement("div");
+    thumbWrap.className = "ytct-hub-thumb";
+    var nv = newestVideo(rec);
+    var img = document.createElement("img");
+    img.alt = "";
+    img.loading = "lazy";
+    if (nv && nv.thumb) img.src = nv.thumb;
+    thumbWrap.appendChild(img);
+
+    var body = document.createElement("div");
+    body.className = "ytct-hub-body";
+    var name = document.createElement("div");
+    name.className = "ytct-hub-name";
+    name.textContent = rec.title || rec.channelKey;
+    var counts = countWatched(rec.videos);
+    var sub = document.createElement("div");
+    sub.className = "ytct-hub-sub";
+    sub.textContent =
+      rec.videos.length +
+      " videos \u00b7 " +
+      counts.unwatched +
+      " unwatched \u00b7 " +
+      (rec.scannedAt ? timeAgo(rec.scannedAt) : "?");
+    body.appendChild(name);
+    body.appendChild(sub);
+
+    var del = document.createElement("button");
+    del.className = "ytct-hub-del";
+    del.textContent = "\u2715";
+    del.title = "Remove this channel from the tracker";
+    del.addEventListener(
+      "click",
+      function (e) {
+        e.stopPropagation();
+        confirmDialog(
+          "Remove \u201c" + (rec.title || rec.channelKey) + "\u201d from the tracker? The cached list will be deleted.",
+          "Remove",
+          function () {
+            store.del(recordKey(rec.channelKey)).then(function () {
+              openHub();
+            });
+          }
+        );
+      },
+      true
+    );
+
+    card.appendChild(thumbWrap);
+    card.appendChild(body);
+    card.appendChild(del);
+    card.addEventListener("click", function () {
+      cameFromHub = true;
+      openOverlay(rec);
+    });
+    return card;
+  }
+
   // ---- UI: floating action button -----------------------------------------
   function ensureFab() {
     if (document.getElementById(FAB_ID)) {
@@ -628,7 +836,7 @@
     var close = document.createElement("button");
     close.className = "ytct-close";
     close.textContent = "\u2715";
-    close.addEventListener("click", closeOverlay, true);
+    close.addEventListener("click", closeList, true);
 
     header.appendChild(titleEl);
     header.appendChild(stats);
@@ -655,6 +863,14 @@
     });
 
     var rescanBtn = mkBtn("Rescan", function () {
+      // Scanning needs the channel's live Videos page. When the list was
+      // opened from the hub (no channel page loaded), navigate there instead.
+      if (!isChannelPage()) {
+        if (rec.url) location.href = rec.url;
+        else toast("Open the channel's Videos page to rescan");
+        return;
+      }
+      cameFromHub = false;
       closeOverlay();
       runScan(rec.channelKey, false);
     });
@@ -932,6 +1148,15 @@
     refreshFabLabel();
   }
 
+  // Close a list overlay; if it was opened from the hub, go back to the hub
+  // instead of returning to the underlying YouTube page.
+  function closeList() {
+    var hub = cameFromHub;
+    cameFromHub = false;
+    closeOverlay();
+    if (hub) openHub();
+  }
+
   // ---- Tiny UI helpers -----------------------------------------------------
   function mkBtn(label, fn) {
     var b = document.createElement("button");
@@ -1096,7 +1321,24 @@
       ".ytct-modal-btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}",
       ".ytct-modal-btns button{border:none;border-radius:8px;padding:9px 14px;font-size:14px;",
       "background:#383838;color:#fff;}",
-      ".ytct-modal-ok{background:#cc0000 !important;}"
+      ".ytct-modal-ok{background:#cc0000 !important;}",
+      // Hub overview
+      "#" + OVERLAY_ID + ".ytct-hub .ytct-toolbar{position:sticky;top:0;background:#0f0f0f;z-index:2;}",
+      ".ytct-hub-grid{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;",
+      "display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));",
+      "gap:12px;padding:14px;align-content:start;}",
+      ".ytct-hub-card{position:relative;background:#1c1c1c;border-radius:10px;overflow:hidden;",
+      "cursor:pointer;transition:background .15s;}",
+      ".ytct-hub-card:active{background:#272727;}",
+      ".ytct-hub-thumb{position:relative;width:100%;aspect-ratio:16/9;background:#000;}",
+      ".ytct-hub-thumb img{width:100%;height:100%;object-fit:cover;display:block;}",
+      ".ytct-hub-body{padding:8px 10px 10px;}",
+      ".ytct-hub-name{font-size:14px;font-weight:600;line-height:1.25;",
+      "display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}",
+      ".ytct-hub-sub{font-size:11.5px;color:#aaa;margin-top:5px;}",
+      ".ytct-hub-del{position:absolute;top:6px;right:6px;width:26px;height:26px;",
+      "border:none;border-radius:50%;background:rgba(0,0,0,.65);color:#fff;font-size:14px;",
+      "line-height:1;display:flex;align-items:center;justify-content:center;}"
     ].join("");
     var s = document.createElement("style");
     s.id = "ytct-style";
@@ -1107,6 +1349,13 @@
   // ---- Boot / SPA navigation handling -------------------------------------
   var lastUrl = location.href;
   function onNav() {
+    if (isHubRoute()) {
+      injectStyles();
+      removeFab();
+      cameFromHub = false;
+      if (!document.querySelector("#" + OVERLAY_ID + ".ytct-hub")) openHub();
+      return;
+    }
     if (isVideosTab()) {
       injectStyles();
       ensureFab();
@@ -1121,6 +1370,9 @@
       if (location.href !== lastUrl) {
         lastUrl = location.href;
         onNav();
+      } else if (isHubRoute()) {
+        // Keep the hub mounted even if YouTube re-rendered the document.
+        if (!document.getElementById(OVERLAY_ID)) openHub();
       } else if (isVideosTab() && !document.getElementById(FAB_ID)) {
         // Re-add FAB if YouTube re-rendered the page and wiped it.
         ensureFab();
