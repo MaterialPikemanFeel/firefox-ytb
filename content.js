@@ -8,160 +8,146 @@
   function dbg(msg) {
     if (!DEBUG) return;
     const ts = new Date().toLocaleTimeString();
-    debugLines.push(`[${ts}] ${msg}`);
-    if (debugLines.length > 12) debugLines.shift();
+    debugLines.push("[" + ts + "] " + msg);
+    if (debugLines.length > 15) debugLines.shift();
     if (!debugEl) {
       debugEl = document.createElement("div");
       debugEl.id = "ytrr-debug";
       debugEl.style.cssText =
         "position:fixed!important;bottom:0!important;left:0!important;right:0!important;" +
         "background:rgba(0,0,0,0.85)!important;color:#0f0!important;font:11px/1.4 monospace!important;" +
-        "padding:6px 8px!important;z-index:2147483647!important;max-height:40vh!important;" +
+        "padding:6px 8px!important;z-index:2147483647!important;max-height:35vh!important;" +
         "overflow-y:auto!important;pointer-events:none!important;white-space:pre-wrap!important;";
-      (document.body || document.documentElement).appendChild(debugEl);
+      var target = document.body || document.documentElement;
+      target.appendChild(debugEl);
     }
     debugEl.textContent = debugLines.join("\n");
   }
-  dbg("YTRR content script loaded");
+  dbg("YTRR content script loaded on " + location.hostname);
 
   // --- Tunable thresholds -------------------------------------------------
-  const MIN_REWIND_SECONDS = 1; // ignore tiny backward seeks (quality switches, internal corrections)
-  const CONTINUOUS_REWIND_MS = 3000; // rewinds within this window count as one segment
-  const BUTTON_VISIBLE_MS = 5000; // how long the armed button stays before fading out
-  const PAUSE_EPSILON = 0.25; // tolerance when comparing currentTime to the terminus
+  var MIN_REWIND_SECONDS = 1;
+  var CONTINUOUS_REWIND_MS = 3000;
+  var BUTTON_VISIBLE_MS = 5000;
+  var PAUSE_EPSILON = 0.25;
 
   // --- State --------------------------------------------------------------
-  let terminus = null; // pre-rewind position (the point we replay up to)
-  let replayStart = null; // position captured at first button click
-  let monitoring = false; // actively watching to auto-pause at the terminus
-  let lastKnownTime = 0; // last observed currentTime, used to detect seek direction
-  let lastRewindWallTime = 0; // Date.now() of the previous rewind, for continuity grouping
-
-  let selfInitiatedSeek = false; // suppress detection of seeks we trigger
-  let selfInitiatedPlay = false; // suppress dismissal on plays we trigger
-
-  let hideTimer = null;
-  let video = null;
-  let button = null;
+  var terminus = null;
+  var replayStart = null;
+  var monitoring = false;
+  var lastKnownTime = 0;
+  var lastRewindWallTime = 0;
+  var selfInitiatedSeek = false;
+  var selfInitiatedPlay = false;
+  var hideTimer = null;
+  var video = null;
+  var button = null;
+  var isButtonShown = false;
+  var pollTimer = null;
+  var lastTouchTime = 0;
 
   // --- Button UI ----------------------------------------------------------
-  const SVG_NS = "http://www.w3.org/2000/svg";
-  const ICON_PATH =
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var ICON_PATH =
     "M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z";
 
   function buildIcon() {
-    const svg = document.createElementNS(SVG_NS, "svg");
+    var svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
-    const path = document.createElementNS(SVG_NS, "path");
+    svg.setAttribute("width", "26");
+    svg.setAttribute("height", "26");
+    svg.style.cssText = "fill:currentColor!important;pointer-events:none!important;";
+    var path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", ICON_PATH);
     svg.appendChild(path);
     return svg;
+  }
+
+  function onButtonInteraction(event) {
+    // Prevent double-firing from touch + click on mobile
+    if (event.type === "touchend") {
+      lastTouchTime = Date.now();
+      event.preventDefault();
+    }
+    if (event.type === "click" && Date.now() - lastTouchTime < 500) {
+      return; // skip click if touchend just fired
+    }
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    onButtonClick();
   }
 
   function ensureButton() {
     if (button && document.contains(button)) return button;
     button = document.getElementById("ytrr-button");
     if (!button) {
-      button = document.createElement("button");
+      button = document.createElement("div");
       button.id = "ytrr-button";
-      button.type = "button";
+      button.setAttribute("role", "button");
       button.setAttribute("aria-label", "Replay rewound segment");
+      // Inline all styles directly so they work regardless of CSS injection
+      button.style.cssText =
+        "position:fixed!important;top:16px!important;left:16px!important;" +
+        "width:52px!important;height:52px!important;border:none!important;" +
+        "border-radius:50%!important;margin:0!important;padding:0!important;" +
+        "display:none!important;align-items:center!important;justify-content:center!important;" +
+        "background:rgba(0,0,0,0.6)!important;color:#fff!important;" +
+        "cursor:pointer!important;z-index:2147483647!important;opacity:0!important;" +
+        "transition:opacity 0.25s ease,background-color 0.2s ease!important;" +
+        "-webkit-tap-highlight-color:transparent!important;" +
+        "box-shadow:0 2px 8px rgba(0,0,0,0.6)!important;touch-action:manipulation!important;" +
+        "pointer-events:auto!important;min-width:52px!important;min-height:52px!important;" +
+        "line-height:1!important;font-size:0!important;overflow:hidden!important;";
       button.appendChild(buildIcon());
-      button.addEventListener("click", onButtonClick, true);
-      button.addEventListener("touchend", onButtonClick, true);
+      button.addEventListener("click", onButtonInteraction, true);
+      button.addEventListener("touchend", onButtonInteraction, true);
     }
     return button;
   }
 
-  // --- Player container detection -----------------------------------------
-  function findPlayerContainer() {
-    // Try multiple selectors for both desktop and mobile YouTube
-    const selectors = [
-      "#movie_player",                    // desktop
-      ".html5-video-player",              // desktop fallback
-      "#player-container-id",             // mobile m.youtube.com
-      ".player-container",                // mobile fallback
-      "ytm-player",                       // mobile web component
-      ".ytm-autonav-bar-button-renderer", // mobile
-    ];
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) return el;
-    }
-    // Last resort: use the video element's closest positioned ancestor
-    if (video && video.parentElement) {
-      return video.parentElement;
-    }
-    return null;
-  }
-
-  function isFullscreen() {
-    // Standard Fullscreen API
-    if (document.fullscreenElement || document.webkitFullscreenElement) {
-      return true;
-    }
-    // YouTube desktop player fullscreen class
-    const player = document.querySelector("#movie_player");
-    if (player && player.classList.contains("ytp-fullscreen")) {
-      return true;
-    }
-    // Mobile YouTube: check if html/body has fullscreen-related attributes
-    const html = document.documentElement;
-    if (html.getAttribute("fullscreen") !== null) {
-      return true;
-    }
-    // Detect Android fullscreen via viewport heuristic: if window fills screen
-    if (
-      window.innerHeight === screen.height ||
-      window.innerHeight >= screen.height - 30
-    ) {
-      return true;
-    }
-    return false;
-  }
-
   function mountButton() {
-    const btn = ensureButton();
-    // Try to mount inside fullscreen element first (works on desktop)
-    const fsRoot = document.fullscreenElement || document.webkitFullscreenElement;
-    if (fsRoot) {
-      if (btn.parentElement !== fsRoot) fsRoot.appendChild(btn);
-      return;
+    var btn = ensureButton();
+    // Always mount to body with position:fixed — simplest, most reliable
+    var target = document.body || document.documentElement;
+    if (btn.parentElement !== target) {
+      target.appendChild(btn);
+      dbg("Button mounted to " + target.tagName);
     }
-    // Otherwise mount inside the player container
-    const container = findPlayerContainer();
-    if (container) {
-      // Ensure the container has position for absolute positioning of button
-      const pos = getComputedStyle(container).position;
-      if (pos === "static") container.style.position = "relative";
-      if (btn.parentElement !== container) container.appendChild(btn);
-      return;
-    }
-    // Fallback: append to body
-    if (btn.parentElement !== document.body) document.body.appendChild(btn);
   }
 
-  function updateButtonClasses() {
+  function updateButtonVisual() {
     if (!button) return;
-    button.classList.toggle("ytrr-visible", isButtonShown);
-    button.classList.toggle("ytrr-monitoring", monitoring);
-    const invalid = !monitoring && !hasValidInterval();
-    button.classList.toggle("ytrr-disabled", invalid);
+    if (isButtonShown) {
+      if (monitoring) {
+        button.style.display = "flex";
+        button.style.opacity = "1";
+        button.style.background = "rgba(29,122,252,0.9)";
+      } else if (hasValidInterval()) {
+        button.style.display = "flex";
+        button.style.opacity = "0.85";
+        button.style.background = "rgba(0,0,0,0.6)";
+      } else {
+        button.style.display = "flex";
+        button.style.opacity = "0.35";
+        button.style.background = "rgba(0,0,0,0.6)";
+      }
+    } else {
+      button.style.display = "none";
+      button.style.opacity = "0";
+    }
   }
-
-  let isButtonShown = false;
 
   function showButton() {
     mountButton();
     isButtonShown = true;
-    updateButtonClasses();
-    dbg("Button shown. Parent=" + (button ? (button.parentElement ? button.parentElement.tagName + "#" + (button.parentElement.id || "") : "none") : "no btn"));
+    updateButtonVisual();
+    dbg("Button shown");
   }
 
   function hideButton() {
     isButtonShown = false;
     clearHideTimer();
-    updateButtonClasses();
+    updateButtonVisual();
   }
 
   function clearHideTimer() {
@@ -174,23 +160,21 @@
   function armButtonTemporarily() {
     clearHideTimer();
     showButton();
-    hideTimer = setTimeout(() => {
+    hideTimer = setTimeout(function () {
       if (!monitoring) hideButton();
     }, BUTTON_VISIBLE_MS);
   }
 
   function hasValidInterval() {
     if (terminus === null || !video) return false;
-    const start = replayStart !== null ? replayStart : video.currentTime;
+    var start = replayStart !== null ? replayStart : video.currentTime;
     return start < terminus - PAUSE_EPSILON;
   }
 
   // --- Core interaction ---------------------------------------------------
-  function onButtonClick(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
+  function onButtonClick() {
     if (!video || terminus === null) return;
+    dbg("Button clicked. monitoring=" + monitoring + " valid=" + hasValidInterval());
 
     if (!monitoring) {
       if (!hasValidInterval()) return;
@@ -199,12 +183,14 @@
       clearHideTimer();
       showButton();
       selfPlay();
+      dbg("Monitoring started. replay " + replayStart.toFixed(1) + " -> " + terminus.toFixed(1));
     } else {
       if (replayStart === null) return;
+      dbg("Replaying from " + replayStart.toFixed(1));
       selfSeek(replayStart);
       selfPlay();
     }
-    updateButtonClasses();
+    updateButtonVisual();
   }
 
   function selfSeek(time) {
@@ -216,9 +202,13 @@
   function selfPlay() {
     if (!video) return;
     selfInitiatedPlay = true;
-    const p = video.play();
-    if (p && typeof p.catch === "function") p.catch(() => {});
-    setTimeout(() => {
+    try {
+      var p = video.play();
+      if (p && typeof p.catch === "function") p.catch(function () {});
+    } catch (e) {
+      dbg("play() error: " + e.message);
+    }
+    setTimeout(function () {
       selfInitiatedPlay = false;
     }, 500);
   }
@@ -227,22 +217,23 @@
     monitoring = false;
     replayStart = null;
     hideButton();
+    dbg("Dismissed");
   }
 
   // --- Video event handlers ----------------------------------------------
   function onTimeUpdate() {
     if (!video) return;
-    const t = video.currentTime;
+    var t = video.currentTime;
 
     if (monitoring && terminus !== null && t >= terminus - PAUSE_EPSILON) {
       if (!video.paused) {
         selfInitiatedSeek = false;
         video.pause();
+        dbg("Auto-paused at " + t.toFixed(1) + " (terminus=" + terminus.toFixed(1) + ")");
       }
     }
 
-    if (isButtonShown && !monitoring) updateButtonClasses();
-
+    if (isButtonShown && !monitoring) updateButtonVisual();
     lastKnownTime = t;
   }
 
@@ -250,14 +241,14 @@
     if (!video) return;
     if (selfInitiatedSeek) return;
 
-    const from = lastKnownTime;
-    const to = video.currentTime;
-    const delta = from - to;
+    var from = lastKnownTime;
+    var to = video.currentTime;
+    var delta = from - to;
 
-    dbg(`Seek detected: from=${from.toFixed(1)} to=${to.toFixed(1)} delta=${delta.toFixed(1)}`);
+    dbg("Seek: " + from.toFixed(1) + " -> " + to.toFixed(1) + " (d=" + delta.toFixed(1) + ")");
 
     if (delta >= MIN_REWIND_SECONDS) {
-      dbg(`Rewind recorded! terminus=${from.toFixed(1)}`);
+      dbg("Rewind! terminus=" + from.toFixed(1));
       recordRewind(from);
     }
   }
@@ -268,20 +259,18 @@
   }
 
   function recordRewind(preRewindPos) {
-    const now = Date.now();
-    const continuous =
+    var now = Date.now();
+    var continuous =
       lastRewindWallTime && now - lastRewindWallTime <= CONTINUOUS_REWIND_MS;
 
     if (!continuous || terminus === null) {
       terminus = preRewindPos;
     }
     lastRewindWallTime = now;
-
     monitoring = false;
     replayStart = null;
-
     armButtonTemporarily();
-    updateButtonClasses();
+    updateButtonVisual();
   }
 
   function onPlay() {
@@ -302,7 +291,7 @@
     resetState();
   }
 
-  // --- Wiring -------------------------------------------------------------
+  // --- Video element discovery --------------------------------------------
   function detachFromVideo(v) {
     if (!v) return;
     v.removeEventListener("timeupdate", onTimeUpdate);
@@ -315,7 +304,6 @@
 
   function attachToVideo(v) {
     if (!v || v.__ytrrAttached) return;
-    // Detach from the old video if switching
     if (video && video !== v) detachFromVideo(video);
     v.__ytrrAttached = true;
     video = v;
@@ -325,87 +313,140 @@
     v.addEventListener("seeked", onSeeked);
     v.addEventListener("play", onPlay);
     v.addEventListener("ended", onEnded);
+    dbg("Attached to video. currentTime=" + v.currentTime.toFixed(1));
+  }
+
+  // Deep search: traverse shadow DOMs to find video elements
+  function deepQuerySelector(root, selector) {
+    var result = root.querySelector(selector);
+    if (result) return result;
+    // Search in shadow roots
+    var all = root.querySelectorAll("*");
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].shadowRoot) {
+        result = deepQuerySelector(all[i].shadowRoot, selector);
+        if (result) return result;
+      }
+    }
+    return null;
+  }
+
+  function deepQuerySelectorAll(root, selector) {
+    var results = Array.from(root.querySelectorAll(selector));
+    var all = root.querySelectorAll("*");
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].shadowRoot) {
+        results = results.concat(deepQuerySelectorAll(all[i].shadowRoot, selector));
+      }
+    }
+    return results;
   }
 
   function findAndAttach() {
-    // Try multiple ways to find the video element
-    const v =
+    // Standard selectors first
+    var v =
       document.querySelector("video.html5-main-video") ||
       document.querySelector("#movie_player video") ||
       document.querySelector("ytm-player video") ||
       document.querySelector(".player-container video") ||
+      document.querySelector("#player video") ||
       document.querySelector("video");
+
+    if (!v) {
+      // Try deep search through shadow DOM
+      v = deepQuerySelector(document, "video");
+    }
+
     if (v) {
-      dbg("Video found: " + v.tagName + " src=" + (v.src || v.currentSrc || "(none)").substring(0, 60));
+      if (!v.__ytrrAttached) {
+        dbg("Video found: " + (v.src || v.currentSrc || "(blob)").substring(0, 50));
+      }
       attachToVideo(v);
+      // Stop polling once video is found
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
     } else {
-      const allVideos = document.querySelectorAll("video");
-      dbg("Video NOT found. <video> elements on page: " + allVideos.length);
-      // Log iframe info
-      const iframes = document.querySelectorAll("iframe");
-      dbg("Iframes on page: " + iframes.length);
+      var allVideos = deepQuerySelectorAll(document, "video");
+      dbg("No video yet. Deep search found " + allVideos.length + " <video> elements");
     }
   }
 
-  function onFullscreenChange() {
-    if (document.fullscreenElement || document.webkitFullscreenElement) {
-      mountButton();
-      updateButtonClasses();
-    }
-  }
-
+  // --- Navigation detection -----------------------------------------------
   function onNavigate() {
     resetState();
-    setTimeout(findAndAttach, 500);
+    // Re-enable polling when navigating to find new video
+    startPolling();
   }
 
-  // Watch for URL changes (SPA navigation) via popstate and history
-  let lastUrl = location.href;
+  var lastUrl = location.href;
   function checkUrlChange() {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
+      dbg("URL changed: " + location.href.substring(0, 70));
       onNavigate();
     }
   }
 
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    var attempts = 0;
+    pollTimer = setInterval(function () {
+      findAndAttach();
+      attempts++;
+      if (attempts > 15 || (video && video.__ytrrAttached)) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }, 1000);
+  }
+
+  // --- Init ---------------------------------------------------------------
   function init() {
-    dbg("init() called. URL=" + location.href.substring(0, 80));
-    dbg("document.readyState=" + document.readyState + " body=" + (document.body ? "yes" : "no"));
+    dbg("init() URL=" + location.href.substring(0, 70));
+    dbg("readyState=" + document.readyState + " body=" + (document.body ? "yes" : "no"));
+
     ensureButton();
     findAndAttach();
 
-    document.addEventListener("fullscreenchange", onFullscreenChange, true);
-    document.addEventListener("webkitfullscreenchange", onFullscreenChange, true);
+    // Fullscreen change events
+    document.addEventListener("fullscreenchange", function () {
+      updateButtonVisual();
+    }, true);
+    document.addEventListener("webkitfullscreenchange", function () {
+      updateButtonVisual();
+    }, true);
 
-    // YouTube SPA navigation events
+    // YouTube SPA navigation
     document.addEventListener("yt-navigate-finish", onNavigate, true);
-    // Mobile YouTube may use different navigation; also listen for popstate
     window.addEventListener("popstate", checkUrlChange, true);
 
-    // Intercept pushState/replaceState for SPA detection
-    const origPushState = history.pushState;
+    // Intercept history methods
+    var origPush = history.pushState;
     history.pushState = function () {
-      origPushState.apply(this, arguments);
+      origPush.apply(this, arguments);
       checkUrlChange();
     };
-    const origReplaceState = history.replaceState;
+    var origReplace = history.replaceState;
     history.replaceState = function () {
-      origReplaceState.apply(this, arguments);
+      origReplace.apply(this, arguments);
       checkUrlChange();
     };
 
-    // Watch DOM for new video elements (lazy-loaded players)
-    const observer = new MutationObserver(() => {
-      findAndAttach();
+    // MutationObserver for dynamically added video elements
+    var observer = new MutationObserver(function () {
+      if (!video || !video.__ytrrAttached) {
+        findAndAttach();
+      }
     });
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
     });
 
-    // Retry finding video in case it loads late
-    setTimeout(findAndAttach, 1000);
-    setTimeout(findAndAttach, 3000);
+    // Periodic polling for video (covers late-loading players)
+    startPolling();
   }
 
   if (document.readyState === "loading") {

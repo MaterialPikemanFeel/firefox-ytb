@@ -1,43 +1,22 @@
+/* Styles are now primarily inline on the element for maximum reliability
+   on mobile YouTube. These serve as backup/override. */
+
 #ytrr-button {
-  position: absolute !important;
+  position: fixed !important;
   top: 16px !important;
   left: 16px !important;
-  width: 48px !important;
-  height: 48px !important;
+  width: 52px !important;
+  height: 52px !important;
   border: none !important;
   border-radius: 50% !important;
   margin: 0 !important;
   padding: 0 !important;
-  display: none !important;
-  align-items: center !important;
-  justify-content: center !important;
-  background: rgba(0, 0, 0, 0.6) !important;
-  color: #ffffff !important;
-  cursor: pointer !important;
   z-index: 2147483647 !important;
-  opacity: 0 !important;
-  transition: opacity 0.25s ease, background-color 0.2s ease !important;
-  -webkit-tap-highlight-color: transparent !important;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5) !important;
   touch-action: manipulation !important;
   pointer-events: auto !important;
-  min-width: 48px !important;
-  min-height: 48px !important;
-}
-
-#ytrr-button.ytrr-visible {
-  display: flex !important;
-  opacity: 0.8 !important;
-}
-
-#ytrr-button.ytrr-monitoring {
-  background: rgba(29, 122, 252, 0.9) !important;
-  opacity: 1 !important;
-}
-
-#ytrr-button.ytrr-disabled {
-  opacity: 0.3 !important;
-  cursor: default !important;
+  -webkit-tap-highlight-color: transparent !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6) !important;
+  overflow: hidden !important;
 }
 
 #ytrr-button svg {
