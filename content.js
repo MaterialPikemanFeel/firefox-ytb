@@ -109,13 +109,31 @@
     return button;
   }
 
+  function fullscreenElement() {
+    return (
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      document.mozFullScreenElement ||
+      null
+    );
+  }
+
   function mountButton() {
     var btn = ensureButton();
-    // Always mount to body with position:fixed — simplest, most reliable
-    var target = document.body || document.documentElement;
-    if (btn.parentElement !== target) {
+    // When an element is fullscreen, only it + its descendants render in the
+    // top layer. A button on <body> would be hidden, so mount it INSIDE the
+    // fullscreen element. <video> cannot hold rendered children, so fall back
+    // to its parent in that case.
+    var fsRoot = fullscreenElement();
+    var target;
+    if (fsRoot) {
+      target = fsRoot.tagName === "VIDEO" ? fsRoot.parentElement || fsRoot : fsRoot;
+    } else {
+      target = document.body || document.documentElement;
+    }
+    if (target && btn.parentElement !== target) {
       target.appendChild(btn);
-      dbg("Button mounted to " + target.tagName);
+      dbg("Button mounted to " + target.tagName + (fsRoot ? " [FS]" : ""));
     }
   }
 
@@ -480,12 +498,14 @@
     findAndAttach();
 
     // Fullscreen change events
-    document.addEventListener("fullscreenchange", function () {
+    function onFsChange() {
+      dbg("fullscreenchange -> " + (fullscreenElement() ? fullscreenElement().tagName : "none"));
+      if (isButtonShown) mountButton();
       updateButtonVisual();
-    }, true);
-    document.addEventListener("webkitfullscreenchange", function () {
-      updateButtonVisual();
-    }, true);
+    }
+    document.addEventListener("fullscreenchange", onFsChange, true);
+    document.addEventListener("webkitfullscreenchange", onFsChange, true);
+    document.addEventListener("mozfullscreenchange", onFsChange, true);
 
     // YouTube SPA navigation
     document.addEventListener("yt-navigate-finish", onNavigate, true);
