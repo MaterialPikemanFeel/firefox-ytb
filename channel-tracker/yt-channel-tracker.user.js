@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      1.0.1
+// @version      1.0.2
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
@@ -130,15 +130,26 @@
   }
 
   function channelTitle() {
+    // Prefer the channel-header element on the page itself.
     var sel = [
       "ytm-channel-header-renderer .channel-title",
-      ".channel-title",
-      'meta[property="og:title"]'
+      ".channel-header-title-text",
+      "ytm-c4-tabbed-header-renderer .channel-title",
+      ".channel-title"
     ];
     for (var i = 0; i < sel.length; i++) {
       var el = document.querySelector(sel[i]);
-      if (el) return el.content || el.textContent.trim();
+      var txt = el && (el.textContent || "").trim();
+      if (txt) return txt;
     }
+    // Fall back to the @handle in the URL — reliable on a channel page and
+    // never a stale video title left over from SPA navigation.
+    var h = location.pathname.match(/\/@([^/?#]+)/);
+    if (h) return "@" + decodeURIComponent(h[1]);
+    // og:title / document.title last: on mobile these can briefly hold the
+    // last-watched video's title, so only use them as a final resort.
+    var og = document.querySelector('meta[property="og:title"]');
+    if (og && og.content) return og.content.trim();
     if (document.title) return document.title.replace(/ - YouTube.*/, "").trim();
     return "Channel";
   }
@@ -596,6 +607,13 @@
     var counts = countWatched(rec.videos);
     var titleEl = document.createElement("div");
     titleEl.className = "ytct-title";
+    // Re-derive a fresh channel name when we're on a channel page; this also
+    // repairs records that stored a stale video title from older versions.
+    var live = isChannelPage() ? channelTitle() : "";
+    if (live && live !== rec.title) {
+      rec.title = live;
+      saveRecord(rec.channelKey, rec);
+    }
     titleEl.textContent = rec.title || "Channel";
 
     var stats = document.createElement("div");
