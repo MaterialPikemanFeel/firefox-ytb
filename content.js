@@ -1,6 +1,29 @@
 (() => {
   "use strict";
 
+  // --- Debug overlay -------------------------------------------------------
+  const DEBUG = true;
+  let debugEl = null;
+  const debugLines = [];
+  function dbg(msg) {
+    if (!DEBUG) return;
+    const ts = new Date().toLocaleTimeString();
+    debugLines.push(`[${ts}] ${msg}`);
+    if (debugLines.length > 12) debugLines.shift();
+    if (!debugEl) {
+      debugEl = document.createElement("div");
+      debugEl.id = "ytrr-debug";
+      debugEl.style.cssText =
+        "position:fixed!important;bottom:0!important;left:0!important;right:0!important;" +
+        "background:rgba(0,0,0,0.85)!important;color:#0f0!important;font:11px/1.4 monospace!important;" +
+        "padding:6px 8px!important;z-index:2147483647!important;max-height:40vh!important;" +
+        "overflow-y:auto!important;pointer-events:none!important;white-space:pre-wrap!important;";
+      (document.body || document.documentElement).appendChild(debugEl);
+    }
+    debugEl.textContent = debugLines.join("\n");
+  }
+  dbg("YTRR content script loaded");
+
   // --- Tunable thresholds -------------------------------------------------
   const MIN_REWIND_SECONDS = 1; // ignore tiny backward seeks (quality switches, internal corrections)
   const CONTINUOUS_REWIND_MS = 3000; // rewinds within this window count as one segment
@@ -132,6 +155,7 @@
     mountButton();
     isButtonShown = true;
     updateButtonClasses();
+    dbg("Button shown. Parent=" + (button ? (button.parentElement ? button.parentElement.tagName + "#" + (button.parentElement.id || "") : "none") : "no btn"));
   }
 
   function hideButton() {
@@ -230,7 +254,10 @@
     const to = video.currentTime;
     const delta = from - to;
 
+    dbg(`Seek detected: from=${from.toFixed(1)} to=${to.toFixed(1)} delta=${delta.toFixed(1)}`);
+
     if (delta >= MIN_REWIND_SECONDS) {
+      dbg(`Rewind recorded! terminus=${from.toFixed(1)}`);
       recordRewind(from);
     }
   }
@@ -308,7 +335,16 @@
       document.querySelector("ytm-player video") ||
       document.querySelector(".player-container video") ||
       document.querySelector("video");
-    if (v) attachToVideo(v);
+    if (v) {
+      dbg("Video found: " + v.tagName + " src=" + (v.src || v.currentSrc || "(none)").substring(0, 60));
+      attachToVideo(v);
+    } else {
+      const allVideos = document.querySelectorAll("video");
+      dbg("Video NOT found. <video> elements on page: " + allVideos.length);
+      // Log iframe info
+      const iframes = document.querySelectorAll("iframe");
+      dbg("Iframes on page: " + iframes.length);
+    }
   }
 
   function onFullscreenChange() {
@@ -333,6 +369,8 @@
   }
 
   function init() {
+    dbg("init() called. URL=" + location.href.substring(0, 80));
+    dbg("document.readyState=" + document.readyState + " body=" + (document.body ? "yes" : "no"));
     ensureButton();
     findAndAttach();
 
