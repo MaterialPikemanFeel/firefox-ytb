@@ -1,13 +1,24 @@
 (() => {
   "use strict";
 
+  // --- Settings (persisted via browser.storage.local) ---------------------
+  var DEFAULTS = {
+    fadeSeconds: 8, // how long the armed (semi-transparent) button stays
+    persistent: false, // keep the button until the next rewind / dismiss
+    debug: false, // show the on-page debug log overlay
+  };
+  var settings = {
+    fadeSeconds: DEFAULTS.fadeSeconds,
+    persistent: DEFAULTS.persistent,
+    debug: DEFAULTS.debug,
+  };
+
   // --- Debug overlay -------------------------------------------------------
-  const DEBUG = true;
-  let debugEl = null;
-  const debugLines = [];
+  var debugEl = null;
+  var debugLines = [];
   function dbg(msg) {
-    if (!DEBUG) return;
-    const ts = new Date().toLocaleTimeString();
+    if (!settings.debug) return;
+    var ts = new Date().toLocaleTimeString();
     debugLines.push("[" + ts + "] " + msg);
     if (debugLines.length > 15) debugLines.shift();
     if (!debugEl) {
@@ -23,12 +34,47 @@
     }
     debugEl.textContent = debugLines.join("\n");
   }
-  dbg("YTRR content script loaded on " + location.hostname);
+
+  function removeDebugOverlay() {
+    if (debugEl && debugEl.parentElement) debugEl.parentElement.removeChild(debugEl);
+    debugEl = null;
+    debugLines = [];
+  }
+
+  function applySettings(loaded) {
+    if (loaded && typeof loaded === "object") {
+      if (typeof loaded.fadeSeconds === "number" && loaded.fadeSeconds >= 1) {
+        settings.fadeSeconds = loaded.fadeSeconds;
+      }
+      if (typeof loaded.persistent === "boolean") settings.persistent = loaded.persistent;
+      if (typeof loaded.debug === "boolean") settings.debug = loaded.debug;
+    }
+    if (!settings.debug) removeDebugOverlay();
+  }
+
+  function loadSettings() {
+    try {
+      if (typeof browser !== "undefined" && browser.storage && browser.storage.local) {
+        browser.storage.local.get(DEFAULTS).then(function (res) {
+          applySettings(res);
+          dbg("Settings loaded: fade=" + settings.fadeSeconds + "s persistent=" + settings.persistent);
+        }, function () {});
+        if (browser.storage.onChanged) {
+          browser.storage.onChanged.addListener(function (changes, area) {
+            if (area !== "local") return;
+            var next = {};
+            for (var k in changes) next[k] = changes[k].newValue;
+            applySettings(next);
+            dbg("Settings updated: fade=" + settings.fadeSeconds + "s persistent=" + settings.persistent);
+          });
+        }
+      }
+    } catch (e) {}
+  }
 
   // --- Tunable thresholds -------------------------------------------------
   var MIN_REWIND_SECONDS = 1;
   var CONTINUOUS_REWIND_MS = 3000;
-  var BUTTON_VISIBLE_MS = 5000;
   var PAUSE_EPSILON = 0.25;
 
   // --- State --------------------------------------------------------------
@@ -40,6 +86,8 @@
   var selfInitiatedSeek = false;
   var lastSelfPlayTime = 0; // wall-clock time of our last programmatic play()
   var lastSelfSeekTime = 0; // wall-clock time of our last programmatic seek()
+  var selfSeekClearTimer = null; // fallback timer to clear selfInitiatedSeek
+  var reachedTerminus = false; // we already auto-paused at terminus this run
   var SELF_PLAY_GRACE_MS = 3000; // tolerate slow mobile play events
   var SELF_SEEK_GRACE_MS = 1500; // ignore poll-detected jumps right after our seek
   var hideTimer = null;
@@ -185,9 +233,10 @@
   function armButtonTemporarily() {
     clearHideTimer();
     showButton();
+    if (settings.persistent) return; // stay visible until next rewind / dismiss
     hideTimer = setTimeout(function () {
       if (!monitoring) hideButton();
-    }, BUTTON_VISIBLE_MS);
+    }, settings.fadeSeconds * 1000);
   }
 
   function hasValidInterval() {
@@ -205,6 +254,7 @@
       if (!hasValidInterval()) return;
       replayStart = video.currentTime;
       monitoring = true;
+      reachedTerminus = false;
       clearHideTimer();
       showButton();
       selfPlay();
@@ -212,6 +262,7 @@
     } else {
       if (replayStart === null) return;
       dbg("Replaying from " + replayStart.toFixed(1));
+      reachedTerminus = false;
       selfSeek(replayStart);
       selfPlay();
     }
@@ -227,6 +278,13 @@
     // mistaken for a user rewind by the polling detector.
     polledTime = time;
     lastKnownTime = time;
+    // Fallback: if the `seeked` event never fires (unreliable on mobile),
+    // clear the flag anyway so future user rewinds are not silently ignored.
+    if (selfSeekClearTimer) clearTimeout(selfSeekClearTimer);
+    selfSeekClearTimer = setTimeout(function () {
+      selfInitiatedSeek = false;
+      selfSeekClearTimer = null;
+    }, SELF_SEEK_GRACE_MS);
   }
 
   function selfPlay() {
@@ -243,6 +301,7 @@
   function dismiss() {
     monitoring = false;
     replayStart = null;
+    reachedTerminus = false;
     hideButton();
     dbg("Dismissed");
   }
@@ -252,8 +311,9 @@
     if (!video) return;
     var t = video.currentTime;
 
-    if (monitoring && terminus !== null && t >= terminus - PAUSE_EPSILON) {
+    if (monitoring && !reachedTerminus && terminus !== null && t >= terminus - PAUSE_EPSILON) {
       if (!video.paused) {
+        reachedTerminus = true;
         selfInitiatedSeek = false;
         video.pause();
         dbg("Auto-paused at " + t.toFixed(1) + " (terminus=" + terminus.toFixed(1) + ")");
@@ -296,6 +356,7 @@
     lastRewindWallTime = now;
     monitoring = false;
     replayStart = null;
+    reachedTerminus = false;
     armButtonTemporarily();
     updateButtonVisual();
   }
@@ -313,6 +374,7 @@
     terminus = null;
     replayStart = null;
     monitoring = false;
+    reachedTerminus = false;
     lastRewindWallTime = 0;
     hideButton();
   }
@@ -364,9 +426,11 @@
       dbg("tick t=" + t.toFixed(1) + " paused=" + video.paused + " term=" + (terminus === null ? "-" : terminus.toFixed(1)));
     }
 
-    // Auto-pause at terminus while monitoring
-    if (monitoring && terminus !== null && t >= terminus - PAUSE_EPSILON) {
+    // Auto-pause at terminus while monitoring (only once per replay run, so a
+    // user resuming past the terminus is not repeatedly re-paused).
+    if (monitoring && !reachedTerminus && terminus !== null && t >= terminus - PAUSE_EPSILON) {
       if (!video.paused) {
+        reachedTerminus = true;
         selfInitiatedSeek = false;
         video.pause();
         dbg("Auto-paused at " + t.toFixed(1));
@@ -516,6 +580,7 @@
 
   // --- Init ---------------------------------------------------------------
   function init() {
+    loadSettings();
     dbg("init() URL=" + location.href.substring(0, 70));
     dbg("readyState=" + document.readyState + " body=" + (document.body ? "yes" : "no"));
 

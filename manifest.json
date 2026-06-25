@@ -16,6 +16,11 @@
       }
     }
   },
+  "permissions": ["storage"],
+  "options_ui": {
+    "page": "options.html",
+    "browser_style": true
+  },
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*", "*://m.youtube.com/*"],

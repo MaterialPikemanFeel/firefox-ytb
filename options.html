@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YouTube Rewind Replay — Settings</title>
+    <style>
+      body {
+        font: 14px/1.5 system-ui, -apple-system, sans-serif;
+        margin: 0;
+        padding: 16px;
+        max-width: 480px;
+      }
+      h1 {
+        font-size: 17px;
+        margin: 0 0 4px;
+      }
+      p.sub {
+        margin: 0 0 18px;
+        color: #666;
+        font-size: 12px;
+      }
+      .row {
+        margin-bottom: 18px;
+      }
+      label.title {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .hint {
+        color: #777;
+        font-size: 12px;
+        margin-top: 3px;
+      }
+      .slider-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      input[type="range"] {
+        flex: 1;
+      }
+      #fadeValue {
+        min-width: 48px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+      .check-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      #saved {
+        color: #1a7f37;
+        font-size: 12px;
+        height: 16px;
+        margin-top: 6px;
+      }
+      fieldset:disabled {
+        opacity: 0.45;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>YouTube Rewind Replay</h1>
+    <p class="sub">Settings apply to open YouTube tabs immediately.</p>
+
+    <div class="row">
+      <div class="check-row">
+        <input type="checkbox" id="persistent" />
+        <label class="title" for="persistent" style="margin: 0">Keep button until next rewind</label>
+      </div>
+      <div class="hint">When on, the button stays visible after a rewind instead of fading out.</div>
+    </div>
+
+    <fieldset id="fadeFieldset" style="border: none; padding: 0; margin: 0">
+      <div class="row">
+        <label class="title" for="fade">Button display time</label>
+        <div class="slider-row">
+          <input type="range" id="fade" min="3" max="60" step="1" />
+          <span id="fadeValue"></span>
+        </div>
+        <div class="hint">How long the button stays after a rewind before fading out (3–60s).</div>
+      </div>
+    </fieldset>
+
+    <div class="row">
+      <div class="check-row">
+        <input type="checkbox" id="debug" />
+        <label class="title" for="debug" style="margin: 0">Show debug log overlay</label>
+      </div>
+      <div class="hint">Displays a green diagnostic log at the bottom of the YouTube page. Leave off for normal use.</div>
+    </div>
+
+    <div id="saved"></div>
+
+    <script src="options.js"></script>
+  </body>
+</html>
