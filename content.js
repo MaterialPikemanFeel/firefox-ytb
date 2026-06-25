@@ -38,7 +38,8 @@
   var lastKnownTime = 0;
   var lastRewindWallTime = 0;
   var selfInitiatedSeek = false;
-  var selfInitiatedPlay = false;
+  var lastSelfPlayTime = 0; // wall-clock time of our last programmatic play()
+  var SELF_PLAY_GRACE_MS = 3000; // tolerate slow mobile play events
   var hideTimer = null;
   var video = null;
   var button = null;
@@ -223,16 +224,13 @@
 
   function selfPlay() {
     if (!video) return;
-    selfInitiatedPlay = true;
+    lastSelfPlayTime = Date.now();
     try {
       var p = video.play();
       if (p && typeof p.catch === "function") p.catch(function () {});
     } catch (e) {
       dbg("play() error: " + e.message);
     }
-    setTimeout(function () {
-      selfInitiatedPlay = false;
-    }, 500);
   }
 
   function dismiss() {
@@ -296,7 +294,10 @@
   }
 
   function onPlay() {
-    if (monitoring && !selfInitiatedPlay) {
+    // A play event soon after our own programmatic play() is ours, not a
+    // manual resume. Mobile YouTube can deliver this event seconds late, so
+    // use a generous grace window instead of a fixed short timeout.
+    if (monitoring && Date.now() - lastSelfPlayTime > SELF_PLAY_GRACE_MS) {
       dismiss();
     }
   }
@@ -461,17 +462,33 @@
   }
 
   // --- Navigation detection -----------------------------------------------
+  function currentVideoId() {
+    try {
+      var m = location.href.match(/[?&]v=([^&]+)/);
+      if (m) return m[1];
+      m = location.pathname.match(/\/(?:shorts|embed)\/([^/?]+)/);
+      if (m) return m[1];
+    } catch (e) {}
+    return null;
+  }
+
   function onNavigate() {
+    var id = currentVideoId();
+    // Only treat as a real navigation when the video actually changed.
+    // Mobile YouTube frequently rewrites the URL / fires navigate events
+    // during normal playback, which must NOT clear our state.
+    if (id === lastVideoId) return;
+    dbg("Navigate: video changed " + lastVideoId + " -> " + id);
+    lastVideoId = id;
     resetState();
-    // Re-enable polling when navigating to find new video
     startPolling();
   }
 
   var lastUrl = location.href;
+  var lastVideoId = currentVideoId();
   function checkUrlChange() {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      dbg("URL changed: " + location.href.substring(0, 70));
       onNavigate();
     }
   }
