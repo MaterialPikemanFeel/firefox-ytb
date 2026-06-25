@@ -555,11 +555,14 @@
   // and the final decision, so watched-% mismatches can be diagnosed remotely.
   function showProgressDiag(rec) {
     closeOverlay();
-    var vids = (rec && rec.videos) || [];
+    // Follow the on-screen order so "last 15" = the bottom of the list the
+    // user sees (newest videos under the default oldest->newest sort).
+    var vids = orderedVideos((rec && rec.videos) || []);
     var lines = [];
     lines.push("YT Channel Tracker progress diagnostic");
     lines.push("version 0.6.0  channel=" + (rec && rec.channelKey ? rec.channelKey : "?"));
     lines.push("total=" + vids.length + "  scannedAt=" + (rec && rec.scannedAt ? new Date(rec.scannedAt).toISOString() : "?"));
+    lines.push("(bottom 15 rows of the list, as displayed)");
     lines.push("columns: progress | width% | aria | ratio% | scaleX% | signal | sel | title");
     lines.push("----------------------------------------");
     var start = Math.max(0, vids.length - 15);
