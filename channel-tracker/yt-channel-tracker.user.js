@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      1.1.0
+// @version      1.2.0
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
 // @author       MaterialPikemanFeel
 // @match        https://m.youtube.com/*
 // @match        https://www.youtube.com/*
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
@@ -111,6 +111,11 @@
   var cancelScan = false;
   var currentRec = null; // record backing the currently-open list overlay
   var cameFromHub = false; // true when a list was opened from the hub
+  // Capture the hub intent at document-start, BEFORE YouTube's SPA strips the
+  // unknown ?ytct=hub query param and rewrites the URL to a clean home page.
+  // Once captured this stays true for the whole page load, so the hub stays
+  // mounted no matter how YouTube mangles the address afterwards.
+  var hubMode = /ytct=hub/.test(location.href);
 
   // ---- Channel identity ---------------------------------------------------
   function getChannelKey() {
@@ -505,7 +510,9 @@
 
   function isHubRoute() {
     return (
-      /[?&]ytct=hub/.test(location.search) || /[#&]ytct=hub/.test(location.hash)
+      hubMode ||
+      /[?&]ytct=hub/.test(location.search) ||
+      /ytct=hub/.test(location.hash)
     );
   }
 
@@ -1380,7 +1387,17 @@
     }, 1200);
   }
 
-  injectStyles();
-  onNav();
-  watchUrl();
+  function boot() {
+    injectStyles();
+    onNav();
+    watchUrl();
+  }
+
+  // We now run at document-start (to capture ?ytct=hub before YouTube strips
+  // it), so the DOM may not be ready yet. Defer the DOM-dependent boot.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot, { once: true });
+  } else {
+    boot();
+  }
 })();
