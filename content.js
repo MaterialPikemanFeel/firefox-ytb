@@ -99,7 +99,9 @@
   var monitorTimer = null;
   var polledTime = 0; // last currentTime seen by the polling monitor
   var lastLogTime = 0; // throttle periodic heartbeat logging
-  var MONITOR_INTERVAL_MS = 250;
+  var MONITOR_INTERVAL_MS = 250; // active (playing / armed / monitoring)
+  var IDLE_MONITOR_INTERVAL_MS = 1000; // paused & nothing to watch -> save battery
+  var currentMonitorInterval = 0;
 
   // --- Button UI ----------------------------------------------------------
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -495,6 +497,9 @@
 
     if (isButtonShown && !monitoring) updateButtonVisual();
     polledTime = t;
+
+    // Adapt polling rate to current activity to reduce idle battery use.
+    rescheduleMonitor();
   }
 
   function pickActiveVideo() {
@@ -517,9 +522,24 @@
     }
   }
 
+  function desiredMonitorInterval() {
+    // Fast polling only when there is something to watch: actively playing,
+    // monitoring a replay, or the button is on screen. Otherwise idle slowly.
+    if (monitoring || isButtonShown) return MONITOR_INTERVAL_MS;
+    if (video && !video.paused) return MONITOR_INTERVAL_MS;
+    return IDLE_MONITOR_INTERVAL_MS;
+  }
+
+  function rescheduleMonitor() {
+    var want = desiredMonitorInterval();
+    if (want === currentMonitorInterval && monitorTimer) return;
+    currentMonitorInterval = want;
+    if (monitorTimer) clearInterval(monitorTimer);
+    monitorTimer = setInterval(monitorTick, want);
+  }
+
   function startMonitor() {
-    if (monitorTimer) return;
-    monitorTimer = setInterval(monitorTick, MONITOR_INTERVAL_MS);
+    rescheduleMonitor();
   }
 
   // Deep search: traverse shadow DOMs to find video elements
