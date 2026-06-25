@@ -39,7 +39,9 @@
   var lastRewindWallTime = 0;
   var selfInitiatedSeek = false;
   var lastSelfPlayTime = 0; // wall-clock time of our last programmatic play()
+  var lastSelfSeekTime = 0; // wall-clock time of our last programmatic seek()
   var SELF_PLAY_GRACE_MS = 3000; // tolerate slow mobile play events
+  var SELF_SEEK_GRACE_MS = 1500; // ignore poll-detected jumps right after our seek
   var hideTimer = null;
   var video = null;
   var button = null;
@@ -219,7 +221,12 @@
   function selfSeek(time) {
     if (!video) return;
     selfInitiatedSeek = true;
+    lastSelfSeekTime = Date.now();
     video.currentTime = time;
+    // Keep the poll-monitor baselines in sync so our own backward jump is not
+    // mistaken for a user rewind by the polling detector.
+    polledTime = time;
+    lastKnownTime = time;
   }
 
   function selfPlay() {
@@ -366,8 +373,9 @@
       }
     }
 
-    // Detect a backward jump (rewind) that the seeking event may have missed
-    if (!selfInitiatedSeek) {
+    // Detect a backward jump (rewind) that the seeking event may have missed.
+    // Skip jumps caused by our own programmatic seeks (replay).
+    if (!selfInitiatedSeek && now - lastSelfSeekTime > SELF_SEEK_GRACE_MS) {
       var delta = polledTime - t;
       if (delta >= MIN_REWIND_SECONDS) {
         dbg("Rewind via poll! " + polledTime.toFixed(1) + " -> " + t.toFixed(1));
