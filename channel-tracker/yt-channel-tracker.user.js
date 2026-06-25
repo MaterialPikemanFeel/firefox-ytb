@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      0.2.0
+// @version      0.3.0
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
 // @author       MaterialPikemanFeel
 // @match        https://m.youtube.com/*
@@ -406,9 +406,79 @@
     fab.id = FAB_ID;
     fab.type = "button";
     fab.textContent = "List";
-    fab.title = "Channel Tracker";
+    fab.title = "Channel Tracker (long-press for diagnostics)";
     fab.addEventListener("click", onFabClick, true);
+    attachLongPress(fab, showSampleOverlay);
     document.documentElement.appendChild(fab);
+  }
+
+  // Long-press the FAB (~600ms) to dump a sample card's HTML, independent of
+  // the list overlay. Used to diagnose progress-bar markup on a real device.
+  function attachLongPress(el, fn) {
+    var timer = null;
+    var fired = false;
+    function start() {
+      fired = false;
+      timer = setTimeout(function () {
+        fired = true;
+        fn();
+      }, 600);
+    }
+    function cancel() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
+    el.addEventListener("touchstart", start, { passive: true });
+    el.addEventListener("touchend", cancel);
+    el.addEventListener("touchmove", cancel);
+    el.addEventListener("touchcancel", cancel);
+    el.addEventListener("mousedown", start);
+    el.addEventListener("mouseup", cancel);
+    el.addEventListener("mouseleave", cancel);
+    // Swallow the click that follows a long-press so it doesn't also scan.
+    el.addEventListener(
+      "click",
+      function (e) {
+        if (fired) {
+          e.preventDefault();
+          e.stopPropagation();
+          fired = false;
+        }
+      },
+      true
+    );
+  }
+
+  function showSampleOverlay() {
+    closeOverlay();
+    var html = captureSampleHtml();
+    var box = document.createElement("div");
+    box.id = OVERLAY_ID;
+    var hdr = document.createElement("div");
+    hdr.className = "ytct-header";
+    var t = document.createElement("div");
+    t.className = "ytct-title";
+    t.textContent = "Sample card HTML";
+    var x = mkBtn("Close", function () { closeOverlay(); });
+    hdr.appendChild(t);
+    hdr.appendChild(x);
+    var ta = document.createElement("textarea");
+    ta.value = html;
+    ta.style.cssText =
+      "width:100%;height:62vh;background:#111;color:#0f0;border:0;font-size:11px;white-space:pre;box-sizing:border-box;padding:8px;";
+    var bar = document.createElement("div");
+    bar.className = "ytct-toolbar";
+    bar.appendChild(
+      mkBtn("Copy", function () {
+        ta.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        toast("Copied");
+      })
+    );
+    box.appendChild(hdr);
+    box.appendChild(bar);
+    box.appendChild(ta);
+    document.documentElement.appendChild(box);
   }
 
   function removeFab() {
