@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      0.3.0
+// @version      0.4.0
+// @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
+// @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
 // @author       MaterialPikemanFeel
 // @match        https://m.youtube.com/*
@@ -616,6 +618,12 @@
       " / unwatched " +
       counts.unwatched;
 
+    var diagBtn = document.createElement("button");
+    diagBtn.className = "ytct-close";
+    diagBtn.textContent = "HTML";
+    diagBtn.title = "Diagnostic: sample card HTML";
+    diagBtn.addEventListener("click", function () { showSampleOverlay(); }, true);
+
     var close = document.createElement("button");
     close.className = "ytct-close";
     close.textContent = "\u2715";
@@ -623,6 +631,7 @@
 
     header.appendChild(titleEl);
     header.appendChild(stats);
+    header.appendChild(diagBtn);
     header.appendChild(close);
 
     var toolbar = document.createElement("div");
