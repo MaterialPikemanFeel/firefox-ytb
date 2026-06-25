@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      0.6.0
+// @version      0.7.0
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
@@ -146,6 +146,10 @@
   // ---- Scraping -----------------------------------------------------------
   // Extract every video card currently in the DOM. Returns array of
   // { id, title, thumb, duration, progress } (progress 0..100 or null).
+  // During a scan we stash the raw markup of one watched card's resume bar so
+  // the Debug report can show the exact structure on this device.
+  var g_resumeSample = "";
+
   function scrapeVisibleCards() {
     var out = [];
     var seen = {};
@@ -291,18 +295,42 @@
     var diag = { sel: "", width: null, aria: null, ratio: null, scaleX: null, progress: null, signal: false };
     if (!card) return diag;
 
+    // The resume-playback host is a full-width container; the actual red bar is
+    // a descendant. Capture one host's markup for the Debug report.
+    var host = card.querySelector("ytm-thumbnail-overlay-resume-playback-renderer, [class*='ResumePlaybackRendererHost']");
+    if (host && !g_resumeSample) {
+      var hh = host.outerHTML || "";
+      g_resumeSample = hh.length > 1500 ? hh.slice(0, 1500) + "\u2026" : hh;
+    }
+
     var bar = card.querySelector(PROGRESS_SELECTOR);
     var el = bar;
     if (!el) {
       var all = card.querySelectorAll('[class*="rogress"], [class*="esume"], [class*="layed"], [role="progressbar"]');
       for (var i = 0; i < all.length; i++) {
         diag.signal = true;
+        // Skip the always-full-width host/container; we want the played segment.
+        if (/Host\b|RendererHost/.test(all[i].className || "")) continue;
         if (pctFromEl(all[i]) != null || scaleXFromEl(all[i]) != null) {
           el = all[i];
           break;
         }
       }
-      if (!el && all.length) el = all[0];
+      // If only the host matched, drill into its descendants for a non-full-width
+      // segment that carries the actual progress (width%, scaleX, or px ratio).
+      if (!el) {
+        var hostEl = host || (all.length ? all[0] : null);
+        if (hostEl) {
+          var kids = hostEl.querySelectorAll("*");
+          for (var k = 0; k < kids.length; k++) {
+            if (pctFromEl(kids[k]) != null || scaleXFromEl(kids[k]) != null) {
+              el = kids[k];
+              break;
+            }
+          }
+          if (!el) el = hostEl;
+        }
+      }
     }
 
     if (el) {
@@ -560,7 +588,7 @@
     var vids = orderedVideos((rec && rec.videos) || []);
     var lines = [];
     lines.push("YT Channel Tracker progress diagnostic");
-    lines.push("version 0.6.0  channel=" + (rec && rec.channelKey ? rec.channelKey : "?"));
+    lines.push("version 0.7.0  channel=" + (rec && rec.channelKey ? rec.channelKey : "?"));
     lines.push("total=" + vids.length + "  scannedAt=" + (rec && rec.scannedAt ? new Date(rec.scannedAt).toISOString() : "?"));
     lines.push("(bottom 15 rows of the list, as displayed)");
     lines.push("columns: progress | width% | aria | ratio% | scaleX% | signal | sel | title");
@@ -582,6 +610,9 @@
       );
     }
     if (vids.length === 0) lines.push("(no cached videos — Scan first)");
+    lines.push("----------------------------------------");
+    lines.push("resume-bar markup sample:");
+    lines.push((rec && rec.resumeSample) ? rec.resumeSample : "(none captured — Rescan on v0.7.0)");
 
     var report = lines.join("\n");
     var box = document.createElement("div");
@@ -670,6 +701,7 @@
 
   function runScan(chKey, incremental) {
     if (scanning) return;
+    g_resumeSample = "";
     showProgressToast();
     loadRecord(chKey).then(function (existing) {
       var known = {};
@@ -733,6 +765,7 @@
       title: channelTitle(),
       url: location.href.split("?")[0],
       scannedAt: Date.now(),
+      resumeSample: g_resumeSample || (existing && existing.resumeSample) || "",
       videos: list
     };
   }
