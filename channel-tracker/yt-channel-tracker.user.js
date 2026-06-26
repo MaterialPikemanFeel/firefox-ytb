@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      1.3.0
+// @version      1.3.1
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
@@ -829,12 +829,18 @@
     header.className = "ytct-header";
 
     var counts = countWatched(rec.videos);
-    // Title doubles as a link to the channel's Videos page (same tab) so you
-    // can go refresh/rescan quickly.
+    // Title doubles as a link to the channel's Videos page (new tab) so you
+    // can go refresh/rescan quickly without losing the list/hub.
     var titleEl = document.createElement("a");
     titleEl.className = "ytct-title";
     var vurl = channelVideosUrl(rec);
-    if (vurl) titleEl.href = vurl;
+    if (vurl) {
+      titleEl.href = vurl;
+      titleEl.addEventListener("click", function (e) {
+        e.preventDefault();
+        openTab(vurl);
+      });
+    }
     titleEl.title = "Open channel Videos page";
     // Re-derive a fresh channel name when we're on a channel page; this also
     // repairs records that stored a stale video title from older versions.
@@ -1300,8 +1306,8 @@
       "border-bottom:1px solid #272727;}",
       ".ytct-title{font-weight:700;font-size:16px;flex:0 1 auto;overflow:hidden;",
       "text-overflow:ellipsis;white-space:nowrap;max-width:55%;color:#fff;",
-      "text-decoration:none;border-bottom:1px dotted #777;padding-bottom:1px;}",
-      ".ytct-title:active{color:#3ea6ff;border-bottom-color:#3ea6ff;}",
+      "text-decoration:none;}",
+      ".ytct-title:active{color:#3ea6ff;}",
       ".ytct-stats{font-size:12px;color:#aaa;flex:1 1 auto;}",
       ".ytct-close{margin-left:auto;background:none;border:none;color:#fff;font-size:20px;}",
       ".ytct-toolbar{display:flex;gap:8px;padding:8px 14px;overflow-x:auto;",
