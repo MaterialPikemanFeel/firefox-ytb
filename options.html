@@ -41,7 +41,8 @@
       input[type="range"] {
         flex: 1;
       }
-      #fadeValue {
+      #fadeValue,
+      #windowValue {
         min-width: 48px;
         text-align: right;
         font-variant-numeric: tabular-nums;
@@ -85,6 +86,19 @@
         <div class="hint">How long the button stays after a rewind before fading out (3–60s).</div>
       </div>
     </fieldset>
+
+    <div class="row">
+      <label class="title" for="window">Continuous-rewind window</label>
+      <div class="slider-row">
+        <input type="range" id="window" min="3" max="120" step="1" />
+        <span id="windowValue"></span>
+      </div>
+      <div class="hint">
+        Rewinds made within this gap of each other keep the same auto-pause point
+        (terminus). Make it longer if you like to listen for a while between
+        rewinds and still keep your return point (3–120s).
+      </div>
+    </div>
 
     <div class="row">
       <div class="check-row">

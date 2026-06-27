@@ -6,11 +6,13 @@
     fadeSeconds: 8, // how long the armed (semi-transparent) button stays
     persistent: false, // keep the button until the next rewind / dismiss
     debug: false, // show the on-page debug log overlay
+    continuousRewindSeconds: 3, // rewinds within this gap keep the same terminus
   };
   var settings = {
     fadeSeconds: DEFAULTS.fadeSeconds,
     persistent: DEFAULTS.persistent,
     debug: DEFAULTS.debug,
+    continuousRewindSeconds: DEFAULTS.continuousRewindSeconds,
   };
 
   // --- Debug overlay -------------------------------------------------------
@@ -48,6 +50,9 @@
       }
       if (typeof loaded.persistent === "boolean") settings.persistent = loaded.persistent;
       if (typeof loaded.debug === "boolean") settings.debug = loaded.debug;
+      if (typeof loaded.continuousRewindSeconds === "number" && loaded.continuousRewindSeconds >= 1) {
+        settings.continuousRewindSeconds = loaded.continuousRewindSeconds;
+      }
     }
     if (!settings.debug) removeDebugOverlay();
   }
@@ -74,7 +79,6 @@
 
   // --- Tunable thresholds -------------------------------------------------
   var MIN_REWIND_SECONDS = 1;
-  var CONTINUOUS_REWIND_MS = 3000;
   var PAUSE_EPSILON = 0.25;
 
   // --- State --------------------------------------------------------------
@@ -334,11 +338,21 @@
   }
 
   function dismiss() {
+    // Ending a blue (monitoring) session means the terminus has been "used":
+    // you pressed the button, replayed any number of times, then resumed /
+    // dismissed. Discard the terminus so the next rewind starts fresh. A
+    // dismiss while merely armed (never pressed) keeps the terminus, so a
+    // large continuous-rewind window can still preserve it across a pause.
+    var wasMonitoring = monitoring;
     monitoring = false;
     replayStart = null;
     reachedTerminus = false;
+    if (wasMonitoring) {
+      terminus = null;
+      lastRewindWallTime = 0;
+    }
     hideButton();
-    dbg("Dismissed");
+    dbg("Dismissed" + (wasMonitoring ? " (terminus cleared)" : ""));
   }
 
   // --- Video event handlers ----------------------------------------------
@@ -382,8 +396,8 @@
 
   function recordRewind(preRewindPos) {
     var now = Date.now();
-    var continuous =
-      lastRewindWallTime && now - lastRewindWallTime <= CONTINUOUS_REWIND_MS;
+    var windowMs = (settings.continuousRewindSeconds || 3) * 1000;
+    var continuous = lastRewindWallTime && now - lastRewindWallTime <= windowMs;
 
     if (!continuous || terminus === null) {
       terminus = preRewindPos;
