@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      1.3.1
+// @version      1.4.0
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
-// @description  Build a fixed, cached, oldest-to-newest list of a channel's videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
+// @description  Build a fixed, cached, oldest-to-newest list of a channel's (or playlist's) videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
 // @author       MaterialPikemanFeel
 // @match        https://m.youtube.com/*
 // @match        https://www.youtube.com/*
@@ -133,7 +133,22 @@
       href.match(/\/(user|c)\/([^/?#]+)/) ||
       location.href.match(/\/(user|c)\/([^/?#]+)/);
     if (u) return "legacy:" + decodeURIComponent(u[2]);
+    // Playlist page: key off the list id.
+    if (isPlaylistPage()) {
+      var pl = playlistId();
+      if (pl) return "playlist:" + pl;
+    }
     return null;
+  }
+
+  // The URL we store for a tracked page, preserving the playlist's list= param
+  // (a plain split('?') would drop it and break Rescan/title links).
+  function trackedPageUrl() {
+    if (isPlaylistPage()) {
+      var pl = playlistId();
+      return "https://m.youtube.com/playlist?list=" + (pl || "");
+    }
+    return location.href.split("?")[0];
   }
 
   function isChannelPage() {
@@ -143,13 +158,44 @@
     return false;
   }
 
+  function isPlaylistPage() {
+    return /^\/playlist\/?$/.test(location.pathname) && /[?&]list=/.test(location.search);
+  }
+
+  function playlistId() {
+    var m = location.search.match(/[?&]list=([A-Za-z0-9_-]+)/);
+    return m ? m[1] : null;
+  }
+
   function isVideosTab() {
     // On mobile the videos tab path ends with /videos, but the channel root
     // also lists videos. Accept either; scanning just grabs whatever is there.
-    return isChannelPage();
+    // Playlist pages are tracked the same way as channels.
+    return isChannelPage() || isPlaylistPage();
+  }
+
+  function playlistTitle() {
+    var sel = [
+      "ytm-playlist-header-renderer .title",
+      "ytm-playlist-header-renderer .ytm-playlist-header-title",
+      "ytm-playlist-header-renderer h1",
+      ".playlist-header-title",
+      ".metadata-header .title",
+      "h1.title"
+    ];
+    for (var i = 0; i < sel.length; i++) {
+      var el = document.querySelector(sel[i]);
+      var txt = el && (el.textContent || "").trim();
+      if (txt) return txt;
+    }
+    var og = document.querySelector('meta[property="og:title"]');
+    if (og && og.content) return og.content.trim();
+    if (document.title) return document.title.replace(/ - YouTube.*/, "").trim();
+    return "Playlist";
   }
 
   function channelTitle() {
+    if (isPlaylistPage()) return playlistTitle();
     // Prefer the channel-header element on the page itself.
     var sel = [
       "ytm-channel-header-renderer .channel-title",
@@ -190,7 +236,7 @@
 
       // Walk up to the card container so we can read title/thumb/progress.
       var card = a.closest(
-        "ytm-media-item, ytm-video-with-context-renderer, ytm-compact-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, yt-lockup-view-model, li, .compact-media-item"
+        "ytm-media-item, ytm-video-with-context-renderer, ytm-compact-video-renderer, ytm-playlist-video-renderer, ytd-playlist-video-renderer, ytd-grid-video-renderer, ytd-rich-item-renderer, yt-lockup-view-model, li, .compact-media-item, .playlist-video-item"
       ) || a.parentElement;
 
       var title = extractTitle(a, card);
@@ -392,10 +438,7 @@
     return added;
   }
 
-  function scanChannel(opts) {
-    opts = opts || {};
-    var stopOnKnown = !!opts.incremental;
-    var known = opts.known || {};
+  function scanChannel() {
     return new Promise(function (resolve) {
       var collected = [];
       var index = {};
@@ -413,19 +456,6 @@
         if (cancelScan) return finish();
         var fresh = scrapeVisibleCards();
         var added = mergeCards(collected, index, fresh);
-
-        // Incremental update: once we hit videos we already cached, the new
-        // ones above them are all we needed.
-        if (stopOnKnown && fresh.length) {
-          var hitKnown = false;
-          for (var i = 0; i < fresh.length; i++) {
-            if (known[fresh[i].id]) {
-              hitKnown = true;
-              break;
-            }
-          }
-          if (hitKnown && added === 0) return finish();
-        }
 
         updateProgressToast(collected.length);
 
@@ -498,6 +528,8 @@
   function channelVideosUrl(rec) {
     var base = (rec && rec.url) || "";
     if (!base) return "";
+    // Playlists link straight to the playlist page (keep list= param).
+    if (/[?&]list=/.test(base) || /\/playlist/.test(base)) return base;
     base = base.split("?")[0].split("#")[0].replace(/\/+$/, "");
     if (/\/videos$/.test(base)) return base;
     return base + "/videos";
@@ -715,16 +747,16 @@
     e.stopPropagation();
     var chKey = getChannelKey();
     if (!chKey) {
-      toast("Open a channel page first");
+      toast("Open a channel or playlist page first");
       return;
     }
     loadRecord(chKey).then(function (rec) {
       if (!rec || !rec.videos || !rec.videos.length) {
         confirmDialog(
-          "No cached list for this channel yet. Scan now?",
+          "No cached list yet. Scan now?",
           "Scan",
           function () {
-            runScan(chKey, false);
+            runScan(chKey);
           }
         );
         return;
@@ -735,10 +767,10 @@
           ago +
           " (" +
           rec.videos.length +
-          " videos). Update before viewing?",
-        "Update",
+          " videos). Rescan before viewing?",
+        "Rescan",
         function () {
-          runScan(chKey, true);
+          runScan(chKey);
         },
         "Skip",
         function () {
@@ -748,19 +780,13 @@
     });
   }
 
-  function runScan(chKey, incremental) {
+  function runScan(chKey) {
     if (scanning) return;
     showProgressToast();
     loadRecord(chKey).then(function (existing) {
-      var known = {};
-      var base = [];
-      if (existing && existing.videos) {
-        base = existing.videos.slice();
-        for (var i = 0; i < base.length; i++) known[base[i].id] = base[i];
-      }
-      scanChannel({ incremental: incremental, known: known }).then(function (
-        fresh
-      ) {
+      // Full rescan every time: re-scrape the entire list so existing videos'
+      // progress bars and watched state are refreshed, not just new ones.
+      scanChannel().then(function (fresh) {
         hideProgressToast();
         if (cancelScan && !fresh.length) {
           toast("Scan cancelled");
@@ -811,7 +837,7 @@
     return {
       channelKey: chKey,
       title: channelTitle(),
-      url: location.href.split("?")[0],
+      url: trackedPageUrl(),
       scannedAt: Date.now(),
       lastOpenedId: (existing && existing.lastOpenedId) || null,
       videos: list
@@ -844,7 +870,7 @@
     titleEl.title = "Open channel Videos page";
     // Re-derive a fresh channel name when we're on a channel page; this also
     // repairs records that stored a stale video title from older versions.
-    var live = isChannelPage() ? channelTitle() : "";
+    var live = isVideosTab() ? channelTitle() : "";
     if (live && live !== rec.title) {
       rec.title = live;
       saveRecord(rec.channelKey, rec);
@@ -892,14 +918,14 @@
     var rescanBtn = mkBtn("Rescan", function () {
       // Scanning needs the channel's live Videos page. When the list was
       // opened from the hub (no channel page loaded), navigate there instead.
-      if (!isChannelPage()) {
+      if (!isVideosTab()) {
         if (rec.url) location.href = rec.url;
-        else toast("Open the channel's Videos page to rescan");
+        else toast("Open the channel/playlist page to rescan");
         return;
       }
       cameFromHub = false;
       closeOverlay();
-      runScan(rec.channelKey, false);
+      runScan(rec.channelKey);
     });
 
     toolbar.appendChild(sortBtn);
