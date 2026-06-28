@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Channel Tracker (mobile)
 // @namespace    https://github.com/MaterialPikemanFeel/firefox-ytb
-// @version      1.4.0
+// @version      1.4.1
 // @downloadURL  https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @updateURL    https://raw.githubusercontent.com/MaterialPikemanFeel/firefox-ytb/devin/1782401112-replay-extension/channel-tracker/yt-channel-tracker.user.js
 // @description  Build a fixed, cached, oldest-to-newest list of a channel's (or playlist's) videos on m.youtube.com, showing YouTube's native watched progress and letting you filter unwatched. For Firefox Android + Violentmonkey.
@@ -898,9 +898,14 @@
     var toolbar = document.createElement("div");
     toolbar.className = "ytct-toolbar";
 
-    var sortBtn = mkBtn(sortAsc ? "Oldest \u2192 Newest" : "Newest \u2192 Oldest", function () {
+    var recIsPlaylist = /^playlist:/.test(rec.channelKey || "");
+    function sortLabel() {
+      if (recIsPlaylist) return sortAsc ? "Playlist order" : "Reversed";
+      return sortAsc ? "Oldest \u2192 Newest" : "Newest \u2192 Oldest";
+    }
+    var sortBtn = mkBtn(sortLabel(), function () {
       sortAsc = !sortAsc;
-      sortBtn.textContent = sortAsc ? "Oldest \u2192 Newest" : "Newest \u2192 Oldest";
+      sortBtn.textContent = sortLabel();
       renderList(listWrap, rec.videos);
     });
 
@@ -1067,11 +1072,21 @@
 
   function orderedVideos(videos) {
     var arr = videos.slice();
-    // DOM order is newest-first, captured as ascending seq. Oldest->newest is
-    // the reverse of seq.
-    arr.sort(function (a, b) {
-      return (b.seq || 0) - (a.seq || 0); // ascending = oldest first
-    });
+    var isPl = currentRec && /^playlist:/.test(currentRec.channelKey || "");
+    if (isPl) {
+      // Playlists render in their own saved order (seq 0 = top = position 1);
+      // there's no reliable upload-date order, so preserve that order as-is.
+      // sortAsc=true shows native playlist order; toggling reverses it.
+      arr.sort(function (a, b) {
+        return (a.seq || 0) - (b.seq || 0);
+      });
+    } else {
+      // Channel /videos DOM is newest-first, captured as ascending seq.
+      // Oldest->newest is the reverse of seq.
+      arr.sort(function (a, b) {
+        return (b.seq || 0) - (a.seq || 0); // ascending = oldest first
+      });
+    }
     if (!sortAsc) arr.reverse();
     return arr;
   }
