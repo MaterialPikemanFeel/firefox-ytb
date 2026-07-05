@@ -62,12 +62,32 @@
       fieldset:disabled {
         opacity: 0.45;
       }
+      .radio-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 4px;
+      }
+      .radio-row label {
+        font-weight: normal;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
     <h1>YouTube Rewind Replay</h1>
     <p class="sub">Settings apply to open YouTube tabs immediately.</p>
 
+    <div class="row">
+      <label class="title">Mode</label>
+      <div class="radio-row">
+        <label><input type="radio" name="mode" value="rewind" id="modeRewind" /> Rewind (auto-terminus)</label>
+        <label><input type="radio" name="mode" value="ab" id="modeAB" /> A-B Repeat</label>
+      </div>
+      <div class="hint">Rewind: auto-detects rewinds and offers a replay button. A-B: manually set start (A) and end (B) points for segment replay.</div>
+    </div>
+
+    <fieldset id="rewindSettings" style="border:none;padding:0;margin:0">
     <div class="row">
       <div class="check-row">
         <input type="checkbox" id="persistent" />
@@ -99,6 +119,7 @@
         rewinds and still keep your return point (3–120s).
       </div>
     </div>
+    </fieldset>
 
     <div class="row">
       <div class="check-row">

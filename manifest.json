@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "YouTube Rewind Replay",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Remembers where you rewound from on YouTube and lets you replay that segment with one tap. Designed for fullscreen on Firefox for Android.",
   "icons": {
     "48": "icons/icon-48.png",

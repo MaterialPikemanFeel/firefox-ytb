@@ -5,6 +5,7 @@ var DEFAULTS = {
   persistent: false,
   debug: false,
   continuousRewindSeconds: 3,
+  mode: "rewind",
 };
 
 var fadeEl = document.getElementById("fade");
@@ -14,6 +15,9 @@ var persistentEl = document.getElementById("persistent");
 var debugEl = document.getElementById("debug");
 var windowEl = document.getElementById("window");
 var windowValueEl = document.getElementById("windowValue");
+var modeRewindEl = document.getElementById("modeRewind");
+var modeABEl = document.getElementById("modeAB");
+var rewindSettingsEl = document.getElementById("rewindSettings");
 var savedEl = document.getElementById("saved");
 
 var savedTimer = null;
@@ -30,6 +34,11 @@ function renderFade() {
   fadeFieldset.disabled = persistentEl.checked;
 }
 
+function renderMode() {
+  var isRewind = modeRewindEl.checked;
+  rewindSettingsEl.disabled = !isRewind;
+}
+
 function renderWindow() {
   windowValueEl.textContent = windowEl.value + "s";
 }
@@ -40,6 +49,7 @@ function save() {
     persistent: persistentEl.checked,
     debug: debugEl.checked,
     continuousRewindSeconds: parseInt(windowEl.value, 10),
+    mode: modeABEl.checked ? "ab" : "rewind",
   };
   browser.storage.local.set(values).then(flashSaved, function () {});
 }
@@ -50,8 +60,14 @@ function load() {
     persistentEl.checked = res.persistent;
     debugEl.checked = res.debug;
     windowEl.value = res.continuousRewindSeconds;
+    if (res.mode === "ab") {
+      modeABEl.checked = true;
+    } else {
+      modeRewindEl.checked = true;
+    }
     renderFade();
     renderWindow();
+    renderMode();
   });
 }
 
@@ -64,5 +80,7 @@ persistentEl.addEventListener("change", function () {
 windowEl.addEventListener("input", renderWindow);
 windowEl.addEventListener("change", save);
 debugEl.addEventListener("change", save);
+modeRewindEl.addEventListener("change", function () { renderMode(); save(); });
+modeABEl.addEventListener("change", function () { renderMode(); save(); });
 
 load();

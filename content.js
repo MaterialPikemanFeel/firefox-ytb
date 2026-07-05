@@ -7,12 +7,14 @@
     persistent: false, // keep the button until the next rewind / dismiss
     debug: false, // show the on-page debug log overlay
     continuousRewindSeconds: 3, // rewinds within this gap keep the same terminus
+    mode: "rewind", // "rewind" (auto-terminus) or "ab" (manual A-B repeat)
   };
   var settings = {
     fadeSeconds: DEFAULTS.fadeSeconds,
     persistent: DEFAULTS.persistent,
     debug: DEFAULTS.debug,
     continuousRewindSeconds: DEFAULTS.continuousRewindSeconds,
+    mode: DEFAULTS.mode,
   };
 
   // --- Debug overlay -------------------------------------------------------
@@ -52,6 +54,11 @@
       if (typeof loaded.debug === "boolean") settings.debug = loaded.debug;
       if (typeof loaded.continuousRewindSeconds === "number" && loaded.continuousRewindSeconds >= 1) {
         settings.continuousRewindSeconds = loaded.continuousRewindSeconds;
+      }
+      if (loaded.mode === "rewind" || loaded.mode === "ab") {
+        var oldMode = settings.mode;
+        settings.mode = loaded.mode;
+        if (oldMode !== settings.mode) switchMode();
       }
     }
     if (!settings.debug) removeDebugOverlay();
@@ -106,6 +113,18 @@
   var MONITOR_INTERVAL_MS = 250; // active (playing / armed / monitoring)
   var IDLE_MONITOR_INTERVAL_MS = 1000; // paused & nothing to watch -> save battery
   var currentMonitorInterval = 0;
+
+  // --- A-B Mode State -------------------------------------------------------
+  var abPointA = null;
+  var abPointB = null;
+  var abMonitoring = false;
+  var abBtnA = null;
+  var abBtnB = null;
+  var abReachedB = false;
+  var abLongPressTimer = null;
+  var abLongPressFired = false;
+  var abTouchTimeA = 0;
+  var abTouchTimeB = 0;
 
   // --- Button UI ----------------------------------------------------------
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -376,6 +395,7 @@
   function onSeeking() {
     if (!video) return;
     if (selfInitiatedSeek) return;
+    if (settings.mode !== "rewind") return;
 
     var from = lastKnownTime;
     var to = video.currentTime;
@@ -411,9 +431,15 @@
   }
 
   function onPlay() {
-    // A play event soon after our own programmatic play() is ours, not a
-    // manual resume. Mobile YouTube can deliver this event seconds late, so
-    // use a generous grace window instead of a fixed short timeout.
+    if (settings.mode === "ab") {
+      if (abReachedB && Date.now() - lastSelfPlayTime > SELF_PLAY_GRACE_MS) {
+        dbg("AB: user resumed after B, resetting");
+        abReset();
+      }
+      return;
+    }
+    // Rewind mode: A play event soon after our own programmatic play() is
+    // ours, not a manual resume.
     if (monitoring && Date.now() - lastSelfPlayTime > SELF_PLAY_GRACE_MS) {
       dismiss();
     }
@@ -426,10 +452,208 @@
     reachedTerminus = false;
     lastRewindWallTime = 0;
     hideButton();
+    abPointA = null;
+    abPointB = null;
+    abMonitoring = false;
+    abReachedB = false;
+    updateABVisual();
   }
 
   function onEnded() {
     resetState();
+  }
+
+  // --- A-B Mode UI and logic -----------------------------------------------
+  function buildABButton(label) {
+    var btn = document.createElement("div");
+    btn.setAttribute("role", "button");
+    btn.style.cssText =
+      "position:fixed!important;top:16px!important;" +
+      "width:52px!important;height:52px!important;border:none!important;" +
+      "border-radius:50%!important;margin:0!important;padding:0!important;" +
+      "display:none!important;align-items:center!important;justify-content:center!important;" +
+      "background:rgba(0,0,0,0.6)!important;color:#fff!important;" +
+      "cursor:pointer!important;z-index:2147483647!important;opacity:0.85!important;" +
+      "transition:opacity 0.25s ease,background-color 0.2s ease!important;" +
+      "-webkit-tap-highlight-color:transparent!important;" +
+      "box-shadow:0 2px 8px rgba(0,0,0,0.6)!important;touch-action:manipulation!important;" +
+      "pointer-events:auto!important;min-width:52px!important;min-height:52px!important;" +
+      "font-size:22px!important;font-weight:700!important;line-height:52px!important;" +
+      "text-align:center!important;overflow:hidden!important;user-select:none!important;";
+    btn.textContent = label;
+    return btn;
+  }
+
+  function ensureABButtons() {
+    if (!abBtnA) {
+      abBtnA = buildABButton("A");
+      abBtnA.id = "ytrr-btn-a";
+      abBtnA.style.left = "16px";
+      abBtnA.setAttribute("aria-label", "Set start point A");
+      abBtnA.addEventListener("click", onAInteraction, true);
+      abBtnA.addEventListener("touchstart", onAInteraction, true);
+      abBtnA.addEventListener("touchend", onAInteraction, true);
+      abBtnA.addEventListener("mousedown", onAInteraction, true);
+      abBtnA.addEventListener("touchcancel", cancelABLongPress, true);
+    }
+    if (!abBtnB) {
+      abBtnB = buildABButton("B");
+      abBtnB.id = "ytrr-btn-b";
+      abBtnB.style.left = "76px";
+      abBtnB.setAttribute("aria-label", "Set end point B");
+      abBtnB.addEventListener("click", onBInteraction, true);
+      abBtnB.addEventListener("touchend", onBInteraction, true);
+    }
+  }
+
+  function mountABButtons() {
+    var fsRoot = fullscreenElement();
+    var target;
+    if (fsRoot) {
+      target = fsRoot.tagName === "VIDEO" ? fsRoot.parentElement || fsRoot : fsRoot;
+    } else {
+      target = document.body || document.documentElement;
+    }
+    if (target) {
+      if (abBtnA && abBtnA.parentElement !== target) target.appendChild(abBtnA);
+      if (abBtnB && abBtnB.parentElement !== target) target.appendChild(abBtnB);
+    }
+  }
+
+  function startABLongPress() {
+    abLongPressFired = false;
+    if (abLongPressTimer) clearTimeout(abLongPressTimer);
+    abLongPressTimer = setTimeout(function () {
+      abLongPressFired = true;
+      abLongPressTimer = null;
+      dbg("AB long-press A: reset");
+      abReset();
+    }, 600);
+  }
+
+  function cancelABLongPress() {
+    if (abLongPressTimer) {
+      clearTimeout(abLongPressTimer);
+      abLongPressTimer = null;
+    }
+  }
+
+  function onAInteraction(event) {
+    if (event.type === "touchstart" || event.type === "mousedown") {
+      startABLongPress();
+      return;
+    }
+    cancelABLongPress();
+    if (event.type === "touchend") {
+      abTouchTimeA = Date.now();
+      event.preventDefault();
+    }
+    if (event.type === "click" && Date.now() - abTouchTimeA < 500) return;
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    if (abLongPressFired) { abLongPressFired = false; return; }
+    onAClick();
+  }
+
+  function onBInteraction(event) {
+    if (event.type === "touchstart" || event.type === "mousedown") return;
+    if (event.type === "touchend") {
+      abTouchTimeB = Date.now();
+      event.preventDefault();
+    }
+    if (event.type === "click" && Date.now() - abTouchTimeB < 500) return;
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    onBClick();
+  }
+
+  function onAClick() {
+    if (!video) return;
+    if (abPointA === null) {
+      abPointA = video.currentTime;
+      abMonitoring = false;
+      abReachedB = false;
+      dbg("A set at " + abPointA.toFixed(1));
+    } else {
+      dbg("Replay from A=" + abPointA.toFixed(1) + (abPointB !== null ? " to B=" + abPointB.toFixed(1) : ""));
+      abMonitoring = abPointB !== null;
+      abReachedB = false;
+      selfSeek(abPointA);
+      selfPlay();
+    }
+    updateABVisual();
+  }
+
+  function onBClick() {
+    if (!video || abPointA === null) return;
+    if (abPointB !== null) {
+      abPointB = null;
+      abMonitoring = false;
+      abReachedB = false;
+      dbg("B cleared");
+    } else {
+      var pos = video.currentTime;
+      if (pos <= abPointA + PAUSE_EPSILON) {
+        dbg("B must be after A (" + abPointA.toFixed(1) + "), current=" + pos.toFixed(1));
+        return;
+      }
+      abPointB = pos;
+      abMonitoring = true;
+      abReachedB = false;
+      dbg("B set at " + abPointB.toFixed(1) + ", replaying from A");
+      selfSeek(abPointA);
+      selfPlay();
+    }
+    updateABVisual();
+  }
+
+  function abReset() {
+    abPointA = null;
+    abPointB = null;
+    abMonitoring = false;
+    abReachedB = false;
+    updateABVisual();
+    dbg("AB reset to initial");
+  }
+
+  function updateABVisual() {
+    if (settings.mode !== "ab") {
+      if (abBtnA) abBtnA.style.display = "none";
+      if (abBtnB) abBtnB.style.display = "none";
+      return;
+    }
+    if (!abBtnA || !abBtnB) return;
+    mountABButtons();
+    abBtnA.style.display = "flex";
+    abBtnA.style.opacity = "0.85";
+    abBtnA.style.background = abPointA !== null ? "rgba(29,122,252,0.9)" : "rgba(0,0,0,0.6)";
+    if (abPointA !== null) {
+      abBtnB.style.display = "flex";
+      abBtnB.style.opacity = "0.85";
+      abBtnB.style.background = abPointB !== null ? "rgba(29,122,252,0.9)" : "rgba(0,0,0,0.6)";
+    } else {
+      abBtnB.style.display = "none";
+    }
+  }
+
+  function hideABButtons() {
+    if (abBtnA) abBtnA.style.display = "none";
+    if (abBtnB) abBtnB.style.display = "none";
+  }
+
+  function switchMode() {
+    if (settings.mode === "ab") {
+      terminus = null;
+      replayStart = null;
+      monitoring = false;
+      reachedTerminus = false;
+      lastRewindWallTime = 0;
+      hideButton();
+      updateABVisual();
+    } else {
+      abReset();
+      hideABButtons();
+    }
   }
 
   // --- Video element discovery --------------------------------------------
@@ -473,7 +697,7 @@
     // If we were monitoring but the video element is gone from the document
     // (e.g. the player was torn down on navigation), end the session so the
     // button does not linger forever.
-    if ((monitoring || isButtonShown) && video && !document.contains(video)) {
+    if ((monitoring || isButtonShown || settings.mode === "ab") && video && !document.contains(video)) {
       dbg("Video detached from DOM; resetting");
       resetState();
     }
@@ -499,9 +723,20 @@
       }
     }
 
+    // A-B mode: auto-pause at B point
+    if (abMonitoring && !abReachedB && abPointB !== null && t >= abPointB - PAUSE_EPSILON) {
+      if (!video.paused) {
+        abReachedB = true;
+        selfInitiatedSeek = false;
+        video.pause();
+        dbg("AB auto-paused at B=" + abPointB.toFixed(1));
+      }
+    }
+
     // Detect a backward jump (rewind) that the seeking event may have missed.
     // Skip jumps caused by our own programmatic seeks (replay).
-    if (!selfInitiatedSeek && now - lastSelfSeekTime > SELF_SEEK_GRACE_MS) {
+    // Only in rewind mode; in A-B mode, rewinds have no special meaning.
+    if (settings.mode === "rewind" && !selfInitiatedSeek && now - lastSelfSeekTime > SELF_SEEK_GRACE_MS) {
       var delta = polledTime - t;
       if (delta >= MIN_REWIND_SECONDS) {
         dbg("Rewind via poll! " + polledTime.toFixed(1) + " -> " + t.toFixed(1));
@@ -540,6 +775,7 @@
     // Fast polling only when there is something to watch: actively playing,
     // monitoring a replay, or the button is on screen. Otherwise idle slowly.
     if (monitoring || isButtonShown) return MONITOR_INTERVAL_MS;
+    if (settings.mode === "ab" && abPointA !== null) return MONITOR_INTERVAL_MS;
     if (video && !video.paused) return MONITOR_INTERVAL_MS;
     return IDLE_MONITOR_INTERVAL_MS;
   }
@@ -665,13 +901,17 @@
     dbg("readyState=" + document.readyState + " body=" + (document.body ? "yes" : "no"));
 
     ensureButton();
+    ensureABButtons();
     findAndAttach();
+    switchMode();
 
     // Fullscreen change events
     function onFsChange() {
       dbg("fullscreenchange -> " + (fullscreenElement() ? fullscreenElement().tagName : "none"));
       if (isButtonShown) mountButton();
       updateButtonVisual();
+      if (settings.mode === "ab") mountABButtons();
+      updateABVisual();
     }
     document.addEventListener("fullscreenchange", onFsChange, true);
     document.addEventListener("webkitfullscreenchange", onFsChange, true);

@@ -25,3 +25,33 @@
   fill: currentColor !important;
   pointer-events: none !important;
 }
+
+#ytrr-btn-a,
+#ytrr-btn-b {
+  position: fixed !important;
+  top: 16px !important;
+  width: 52px !important;
+  height: 52px !important;
+  border: none !important;
+  border-radius: 50% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  z-index: 2147483647 !important;
+  touch-action: manipulation !important;
+  pointer-events: auto !important;
+  -webkit-tap-highlight-color: transparent !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6) !important;
+  overflow: hidden !important;
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  text-align: center !important;
+  user-select: none !important;
+}
+
+#ytrr-btn-a {
+  left: 16px !important;
+}
+
+#ytrr-btn-b {
+  left: 76px !important;
+}
