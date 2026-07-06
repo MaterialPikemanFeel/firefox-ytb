@@ -151,6 +151,7 @@
     longPressTimer = setTimeout(function () {
       longPressFired = true;
       longPressTimer = null;
+      if (navigator.vibrate) navigator.vibrate(50);
       dbg("Long-press: dismiss");
       dismiss();
     }, 600);
@@ -526,6 +527,7 @@
     abLongPressTimer = setTimeout(function () {
       abLongPressFired = true;
       abLongPressTimer = null;
+      if (navigator.vibrate) navigator.vibrate(50);
       dbg("AB long-press A: reset");
       abReset();
     }, 600);
