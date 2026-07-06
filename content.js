@@ -84,6 +84,19 @@
     } catch (e) {}
   }
 
+  // --- Haptic feedback ----------------------------------------------------
+  function vibrate(ms) {
+    try {
+      // Firefox content scripts wrap navigator in X-ray wrappers which may
+      // block vibrate(). Fall back to the page's unwrapped navigator.
+      if (navigator.vibrate) return navigator.vibrate(ms);
+      if (typeof wrappedJSObject !== "undefined" && wrappedJSObject.navigator &&
+          wrappedJSObject.navigator.vibrate) {
+        return wrappedJSObject.navigator.vibrate(ms);
+      }
+    } catch (e) { dbg("vibrate error: " + e.message); }
+  }
+
   // --- Tunable thresholds -------------------------------------------------
   var MIN_REWIND_SECONDS = 1;
   var PAUSE_EPSILON = 0.25;
@@ -151,7 +164,7 @@
     longPressTimer = setTimeout(function () {
       longPressFired = true;
       longPressTimer = null;
-      if (navigator.vibrate) navigator.vibrate(50);
+      vibrate(80);
       dbg("Long-press: dismiss");
       dismiss();
     }, 600);
@@ -527,7 +540,7 @@
     abLongPressTimer = setTimeout(function () {
       abLongPressFired = true;
       abLongPressTimer = null;
-      if (navigator.vibrate) navigator.vibrate(50);
+      vibrate(80);
       dbg("AB long-press A: reset");
       abReset();
     }, 600);
