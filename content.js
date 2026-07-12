@@ -631,8 +631,12 @@
     dbg("AB reset to initial");
   }
 
+  function onWatchPage() {
+    return currentVideoId() !== null && !!video && document.contains(video);
+  }
+
   function updateABVisual() {
-    if (settings.mode !== "ab") {
+    if (settings.mode !== "ab" || !onWatchPage()) {
       if (abBtnA) abBtnA.style.display = "none";
       if (abBtnB) abBtnB.style.display = "none";
       return;
@@ -760,6 +764,7 @@
     }
 
     if (isButtonShown && !monitoring) updateButtonVisual();
+    if (settings.mode === "ab") updateABVisual();
     polledTime = t;
 
     // Adapt polling rate to current activity to reduce idle battery use.
